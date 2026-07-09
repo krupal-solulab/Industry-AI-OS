@@ -1,0 +1,23 @@
+# Tenant + admin resources — managing users/roles and reading the audit log.
+# Owners manage the tenant; admins manage users; audit is readable by managers.
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: "default"
+  resource: "tenant"
+  importDerivedRoles:
+    - common_roles
+  rules:
+    - actions: ["read"]
+      effect: EFFECT_ALLOW
+      derivedRoles: ["same_tenant"]
+
+    - actions: ["manage_users", "assign_roles", "read_audit"]
+      effect: EFFECT_ALLOW
+      derivedRoles: ["tenant_manager"]
+
+    - actions: ["update_settings", "delete", "manage_billing"]
+      effect: EFFECT_ALLOW
+      roles: ["owner"]
+      condition:
+        match:
+          expr: request.principal.attr.tenant_id == request.resource.attr.tenant_id

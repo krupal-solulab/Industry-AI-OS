@@ -1,0 +1,15 @@
+# Chat / orchestrator resource — any tenant member can converse; viewers read history.
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: "default"
+  resource: "chat"
+  importDerivedRoles:
+    - common_roles
+  rules:
+    - actions: ["read", "list"]
+      effect: EFFECT_ALLOW
+      derivedRoles: ["same_tenant"]
+
+    - actions: ["send", "create"]
+      effect: EFFECT_ALLOW
+      derivedRoles: ["contributor"]

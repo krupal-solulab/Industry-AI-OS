@@ -1,0 +1,19 @@
+# Document resource — upload/read/retrieve/delete in the knowledge layer.
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: "default"
+  resource: "document"
+  importDerivedRoles:
+    - common_roles
+  rules:
+    - actions: ["read", "retrieve", "list"]
+      effect: EFFECT_ALLOW
+      derivedRoles: ["same_tenant"]
+
+    - actions: ["upload", "create", "update"]
+      effect: EFFECT_ALLOW
+      derivedRoles: ["contributor"]
+
+    - actions: ["delete"]
+      effect: EFFECT_ALLOW
+      derivedRoles: ["tenant_manager"]

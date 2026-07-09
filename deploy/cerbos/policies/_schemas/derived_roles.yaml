@@ -1,0 +1,24 @@
+# Derived roles shared by every resource policy.
+# `same_tenant` re-asserts tenancy at the policy layer as defense in depth — the
+# application already refuses cross-tenant access before calling Cerbos.
+apiVersion: api.cerbos.dev/v1
+derivedRoles:
+  name: common_roles
+  definitions:
+    - name: same_tenant
+      parentRoles: ["owner", "admin", "member", "viewer"]
+      condition:
+        match:
+          expr: request.principal.attr.tenant_id == request.resource.attr.tenant_id
+
+    - name: tenant_manager
+      parentRoles: ["owner", "admin"]
+      condition:
+        match:
+          expr: request.principal.attr.tenant_id == request.resource.attr.tenant_id
+
+    - name: contributor
+      parentRoles: ["owner", "admin", "member"]
+      condition:
+        match:
+          expr: request.principal.attr.tenant_id == request.resource.attr.tenant_id

@@ -1,0 +1,12 @@
+# Audit log resource — append-only; only tenant managers may query it. Writes come
+# from the internal emitter (server-to-server), never a client action.
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: "default"
+  resource: "audit"
+  importDerivedRoles:
+    - common_roles
+  rules:
+    - actions: ["read", "list", "query"]
+      effect: EFFECT_ALLOW
+      derivedRoles: ["tenant_manager"]

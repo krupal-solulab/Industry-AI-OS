@@ -1,0 +1,43 @@
+[project]
+name = "industry-ai-os"
+version = "0.1.0"
+description = "Industry AI OS — reusable multi-tenant AI platform (Milestone 1: Platform Foundation)"
+requires-python = ">=3.11"
+readme = "README.md"
+
+# The root project is a thin workspace umbrella. Real code lives in
+# `packages/*` and `services/*`, each an independent, installable member.
+dependencies = []
+
+[tool.uv.workspace]
+members = ["packages/*", "services/*"]
+
+[tool.uv.sources]
+# Shared spine is a path dependency for every service, so a change to the
+# platform contract propagates without publishing.
+ai-os-shared = { workspace = true }
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["deploy", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+ignore = [
+    "B008",   # FastAPI Depends() in defaults is idiomatic
+    "UP042",  # `str, Enum` kept over StrEnum for stable JSON/DB serialization
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ai_os_shared"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests", "packages", "services"]
+addopts = "-q"
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]

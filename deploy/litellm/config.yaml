@@ -1,0 +1,44 @@
+# LiteLLM proxy — one OpenAI-compatible API across providers.
+# Services reference the ALIASES below (e.g. "claude-primary"), never a raw provider
+# model. Claude is primary; OpenAI is the fallback. Swapping providers or models is a
+# change here, not in application code.
+#
+# Boots fine with empty API keys — calls to a provider only fail at request time if
+# that provider's key is unset, so `docker-compose up` stays green without keys.
+
+model_list:
+  # ---- Primary: Anthropic Claude ----
+  - model_name: claude-primary
+    litellm_params:
+      model: anthropic/claude-opus-4-8
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: claude-fast
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # ---- Fallback: OpenAI ----
+  - model_name: gpt-fallback
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+
+  # ---- Embeddings (OpenAI) ----
+  - model_name: text-embedding-3-small
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+litellm_settings:
+  drop_params: true
+  # If the primary model errors/times out, fall back to OpenAI automatically.
+  fallbacks:
+    - claude-primary: ["gpt-fallback"]
+  num_retries: 2
+  request_timeout: 120
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  # Langfuse callbacks give us LLM traces/cost per request.
+  success_callback: ["langfuse"]
+  failure_callback: ["langfuse"]

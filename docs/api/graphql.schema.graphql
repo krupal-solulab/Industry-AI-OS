@@ -1,0 +1,46 @@
+type AuditEvent {
+  id: String!
+  action: String!
+  resourceKind: String!
+  resourceId: String!
+  actorId: String!
+  createdAt: String!
+}
+
+type ChatReply {
+  sessionId: String!
+  model: String!
+  answer: String!
+}
+
+type Me {
+  userId: String!
+  email: String
+  tenantId: String!
+  roles: [String!]!
+}
+
+type Mutation {
+  chat(message: String!, sessionId: String = null, useRag: Boolean! = false): ChatReply!
+  startDocumentReview(documentId: String!): WorkflowRef!
+  approveWorkflow(workflowId: String!, comment: String! = ""): WorkflowRef!
+  rejectWorkflow(workflowId: String!, comment: String! = ""): WorkflowRef!
+}
+
+type Query {
+  me: Me!
+  auditEvents(limit: Int! = 50): [AuditEvent!]!
+  workflows: [Workflow!]!
+}
+
+type Workflow {
+  workflowId: String!
+  type: String!
+  status: String!
+  decision: String
+}
+
+type WorkflowRef {
+  workflowId: String!
+  status: String!
+}

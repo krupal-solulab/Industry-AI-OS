@@ -1,0 +1,21 @@
+# Workflow resource — the generic document-review-with-approval flow.
+# `approve`/`reject` are restricted to tenant managers (owner/admin); members may
+# start and view. This is the human-in-the-loop control gate.
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: "default"
+  resource: "workflow"
+  importDerivedRoles:
+    - common_roles
+  rules:
+    - actions: ["read", "list"]
+      effect: EFFECT_ALLOW
+      derivedRoles: ["same_tenant"]
+
+    - actions: ["start", "submit"]
+      effect: EFFECT_ALLOW
+      derivedRoles: ["contributor"]
+
+    - actions: ["approve", "reject", "cancel"]
+      effect: EFFECT_ALLOW
+      derivedRoles: ["tenant_manager"]

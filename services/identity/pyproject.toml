@@ -1,0 +1,20 @@
+[project]
+name = "aios-identity"
+version = "0.1.0"
+description = "Industry AI OS — identity service: Keycloak integration, Organizations->tenants, user/role sync."
+requires-python = ">=3.11"
+dependencies = [
+    "ai-os-shared",
+    "uvicorn[standard]>=0.30",
+    "email-validator>=2.1",  # pydantic EmailStr in the create-user model
+]
+
+[tool.uv.sources]
+ai-os-shared = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/identity"]

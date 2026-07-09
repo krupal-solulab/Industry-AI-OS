@@ -1,0 +1,96 @@
+{
+  "realm": "industry-ai-os",
+  "enabled": true,
+  "organizationsEnabled": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "registrationAllowed": false,
+  "sslRequired": "none",
+  "accessTokenLifespan": 1800,
+  "roles": {
+    "realm": [
+      { "name": "owner", "description": "Full control of the tenant" },
+      { "name": "admin", "description": "Manage users, connectors, workflows" },
+      { "name": "member", "description": "Use platform capabilities" },
+      { "name": "viewer", "description": "Read-only access" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "aios-gateway",
+      "name": "Industry AI OS Gateway",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "aios-dev-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "redirectUris": ["*"],
+      "webOrigins": ["*"],
+      "fullScopeAllowed": true,
+      "defaultClientScopes": [
+        "web-origins",
+        "profile",
+        "roles",
+        "email",
+        "organization"
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "owner@demo.aios.local",
+      "email": "owner@demo.aios.local",
+      "firstName": "Demo",
+      "lastName": "Owner",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "Passw0rd!", "temporary": false }],
+      "realmRoles": ["owner"]
+    },
+    {
+      "username": "admin@demo.aios.local",
+      "email": "admin@demo.aios.local",
+      "firstName": "Demo",
+      "lastName": "Admin",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "Passw0rd!", "temporary": false }],
+      "realmRoles": ["admin"]
+    },
+    {
+      "username": "member@demo.aios.local",
+      "email": "member@demo.aios.local",
+      "firstName": "Demo",
+      "lastName": "Member",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "Passw0rd!", "temporary": false }],
+      "realmRoles": ["member"]
+    },
+    {
+      "username": "viewer@demo.aios.local",
+      "email": "viewer@demo.aios.local",
+      "firstName": "Demo",
+      "lastName": "Viewer",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "Passw0rd!", "temporary": false }],
+      "realmRoles": ["viewer"]
+    }
+  ],
+  "organizations": [
+    {
+      "name": "Demo Tenant",
+      "alias": "demo",
+      "domains": [{ "name": "demo.aios.local", "verified": true }],
+      "members": [
+        { "username": "owner@demo.aios.local" },
+        { "username": "admin@demo.aios.local" },
+        { "username": "member@demo.aios.local" },
+        { "username": "viewer@demo.aios.local" }
+      ]
+    }
+  ]
+}

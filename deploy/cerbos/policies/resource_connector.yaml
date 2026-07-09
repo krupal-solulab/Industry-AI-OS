@@ -1,0 +1,20 @@
+# Connector resource — the Connector Hub. Only tenant managers configure connectors;
+# members may invoke enabled ones; everyone in-tenant can list them.
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: "default"
+  resource: "connector"
+  importDerivedRoles:
+    - common_roles
+  rules:
+    - actions: ["read", "list"]
+      effect: EFFECT_ALLOW
+      derivedRoles: ["same_tenant"]
+
+    - actions: ["invoke"]
+      effect: EFFECT_ALLOW
+      derivedRoles: ["contributor"]
+
+    - actions: ["configure", "enable", "disable", "register"]
+      effect: EFFECT_ALLOW
+      derivedRoles: ["tenant_manager"]

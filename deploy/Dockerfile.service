@@ -1,0 +1,28 @@
+# Shared build for every FastAPI service. Build context is the repo root so the
+# service and the shared spine (`packages/shared`) are both available.
+#   docker build -f deploy/Dockerfile.service --build-arg SERVICE=audit -t aios-audit .
+FROM python:3.12-slim AS base
+
+ARG SERVICE
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN pip install --no-cache-dir uv
+
+WORKDIR /app
+
+# Install the shared spine first so it layer-caches independently of service code.
+COPY packages/shared /app/packages/shared
+# Service code (pyproject declares the ai-os-shared path/workspace dependency).
+COPY services/${SERVICE} /app/service
+
+# One resolution pass: uv satisfies the service's ai-os-shared dependency from the
+# local path rather than any index.
+RUN uv pip install --system /app/packages/shared /app/service
+
+EXPOSE 8000
+
+# APP_MODULE is provided per service by compose/helm (e.g. "audit.main:app").
+ENV APP_MODULE=""
+CMD ["sh", "-c", "uvicorn ${APP_MODULE} --host 0.0.0.0 --port 8000"]

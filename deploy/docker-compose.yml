@@ -1,0 +1,195 @@
+# Full Industry AI OS stack: infrastructure (via include) + all application services
+# + a one-shot seed job. `docker compose -f deploy/docker-compose.yml up` on a fresh
+# machine is the supported on-prem baseline (this is what `make up` runs).
+#
+# Every app service is built from the same parameterized Dockerfile with build
+# context = repo root, so each image contains the service + the shared spine.
+
+include:
+  - docker-compose.infra.yml
+
+x-service-base: &service-base
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile.service
+  env_file:
+    - ../.env
+  restart: unless-stopped
+  networks: [aios]
+  healthcheck:
+    test:
+      - "CMD-SHELL"
+      - "exec 3<>/dev/tcp/localhost/8000; echo -e 'GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3; cat <&3 | grep -q '200\\|ok'"
+    interval: 10s
+    timeout: 5s
+    retries: 10
+    start_period: 20s
+
+services:
+  # ------------------------------------------------------------------ Gateway
+  gateway:
+    <<: *service-base
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.service
+      args:
+        SERVICE: gateway
+    environment:
+      APP_MODULE: gateway.main:app
+    ports:
+      # Host 8000 (8080 is commonly taken by the Vite/TanStack frontend dev server).
+      - "8000:8000"
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ----------------------------------------------------------------- Identity
+  identity:
+    <<: *service-base
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.service
+      args:
+        SERVICE: identity
+    environment:
+      APP_MODULE: identity.main:app
+    ports:
+      - "8001:8000"
+    depends_on:
+      keycloak:
+        condition: service_healthy
+
+  # -------------------------------------------------------------------- Authz
+  authz:
+    <<: *service-base
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.service
+      args:
+        SERVICE: authz
+    environment:
+      APP_MODULE: authz.main:app
+    ports:
+      - "8002:8000"
+    depends_on:
+      cerbos:
+        condition: service_healthy
+
+  # ------------------------------------------------------------- Orchestrator
+  orchestrator:
+    <<: *service-base
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.service
+      args:
+        SERVICE: orchestrator
+    environment:
+      APP_MODULE: orchestrator.main:app
+    ports:
+      - "8003:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      litellm:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------- Knowledge
+  knowledge:
+    <<: *service-base
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.service
+      args:
+        SERVICE: knowledge
+    environment:
+      APP_MODULE: knowledge.main:app
+    ports:
+      - "8004:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------- Workflows
+  workflows:
+    <<: *service-base
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.service
+      args:
+        SERVICE: workflows
+    environment:
+      APP_MODULE: workflows.main:app
+    ports:
+      - "8005:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+
+  # --------------------------------------------------------------- Connectors
+  connectors:
+    <<: *service-base
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.service
+      args:
+        SERVICE: connectors
+    environment:
+      APP_MODULE: connectors.main:app
+    ports:
+      - "8006:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # -------------------------------------------------------------------- Audit
+  audit:
+    <<: *service-base
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.service
+      args:
+        SERVICE: audit
+    environment:
+      APP_MODULE: audit.main:app
+    ports:
+      - "8007:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # -------------------------------------------------------------------- Admin
+  admin:
+    <<: *service-base
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.service
+      args:
+        SERVICE: admin
+    environment:
+      APP_MODULE: admin.main:app
+    ports:
+      - "8008:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ------------------------------------------------- Seed (migrations + data)
+  seed:
+    build:
+      context: ..
+      dockerfile: deploy/seed/Dockerfile
+    env_file:
+      - ../.env
+    networks: [aios]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    restart: "no"

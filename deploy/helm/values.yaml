@@ -1,0 +1,89 @@
+# Industry AI OS Helm values.
+# App services are rendered generically from `.Values.services` (see templates/
+# app.yaml) so adding/removing a service is a values change, not new templates.
+
+global:
+  image:
+    repository: ghcr.io/your-org/aios
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  imagePullSecrets: []
+
+# Shared, non-secret config injected into every app service as a ConfigMap.
+# Secrets (API keys, DB passwords) come from a Secret managed by Infisical/Vault —
+# see values.secretRef. NEVER put secrets here.
+config:
+  DEPLOY_MODE: cloud
+  ENVIRONMENT: production
+  LOG_LEVEL: info
+  KEYCLOAK_URL: http://keycloak:8080
+  KEYCLOAK_REALM: industry-ai-os
+  KEYCLOAK_CLIENT_ID: aios-gateway
+  CERBOS_URL: http://cerbos:3592
+  MINIO_ENDPOINT: minio:9000
+  MINIO_BUCKET: aios-documents
+  REDIS_URL: redis://redis-master:6379/0
+  NATS_URL: nats://nats:4222
+  TEMPORAL_HOST: temporal:7233
+  LITELLM_URL: http://litellm:4000
+  LANGFUSE_HOST: http://langfuse:3000
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  DEFAULT_CHAT_MODEL: claude-primary
+  DEFAULT_EMBED_MODEL: text-embedding-3-small
+  # Internal service URLs (in-cluster DNS).
+  IDENTITY_URL: http://identity:8000
+  AUTHZ_URL: http://authz:8000
+  ORCHESTRATOR_URL: http://orchestrator:8000
+  KNOWLEDGE_URL: http://knowledge:8000
+  WORKFLOWS_URL: http://workflows:8000
+  CONNECTORS_URL: http://connectors:8000
+  AUDIT_URL: http://audit:8000
+  ADMIN_URL: http://admin:8000
+
+# Name of a pre-existing Secret holding sensitive env vars (DATABASE_URL,
+# INTERNAL_CONTEXT_SECRET, KEYCLOAK_CLIENT_SECRET, *_API_KEY, MINIO keys, etc.).
+secretRef: aios-secrets
+
+# The application services. Each becomes a Deployment + Service on port 8000.
+services:
+  gateway:      { module: "gateway.main:app",      replicas: 2, public: true }
+  identity:     { module: "identity.main:app",     replicas: 1 }
+  authz:        { module: "authz.main:app",        replicas: 1 }
+  orchestrator: { module: "orchestrator.main:app", replicas: 2 }
+  knowledge:    { module: "knowledge.main:app",    replicas: 1 }
+  workflows:    { module: "workflows.main:app",    replicas: 1 }
+  connectors:   { module: "connectors.main:app",   replicas: 1 }
+  audit:        { module: "audit.main:app",        replicas: 1 }
+  admin:        { module: "admin.main:app",        replicas: 1 }
+
+# Migration + demo-data job, run as a Helm post-install/upgrade hook.
+seed:
+  enabled: true
+  # image: ghcr.io/your-org/aios-seed:0.1.0   # defaults to the app image
+
+resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits:   { cpu: "1",  memory: 1Gi }
+
+ingress:
+  enabled: true
+  className: nginx
+  host: aios.example.com
+  tls: true
+
+# Infra dependency toggles (mirror docker-compose.infra.yml).
+postgresql:
+  enabled: true
+  auth: { username: aios, database: aios }
+keycloak:
+  enabled: true
+minio:
+  enabled: true
+redis:
+  enabled: true
+  architecture: standalone
+nats:
+  enabled: true
+
+# NOTE: Temporal, Langfuse, LiteLLM, and the OTel Collector are deployed via their
+# own charts/manifests (they have no stable Bitnami chart); see deploy/helm/README.md.

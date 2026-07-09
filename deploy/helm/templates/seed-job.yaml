@@ -1,0 +1,27 @@
+{{- if .Values.seed.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aios-seed
+  labels:
+    {{- include "aios.labels" . | nindent 4 }}
+  annotations:
+    # Run migrations + seed after install/upgrade, before traffic.
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 5
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: aios-seed }
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: seed
+          image: {{ .Values.seed.image | default (include "aios.image" .) }}
+          command: ["bash", "/app/seed/run.sh"]
+          envFrom:
+            - configMapRef: { name: aios-config }
+            - secretRef: { name: {{ .Values.secretRef }} }
+{{- end }}
