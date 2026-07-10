@@ -82,10 +82,22 @@ async def authenticate(request: Request, call_next):
 
 # CORS is added LAST so it is the OUTERMOST middleware — that way even early error
 # responses from the auth middleware carry CORS headers and the browser can read them.
-# Browser frontends live on a different origin; origins are configurable via CORS_ORIGINS.
+#
+# Origin policy is environment-driven:
+#   - production  -> only the explicit allow-list in CORS_ORIGINS
+#   - dev/staging -> reflect ANY origin (open) for frictionless frontend work
+# We use allow_origin_regex=".*" for the open case rather than allow_origins=["*"],
+# because "*" is INVALID together with allow_credentials=True (browsers reject it);
+# the regex reflects the caller's Origin back, which is credential-safe.
+_settings = get_settings()
+if _settings.is_production:
+    _cors_kwargs: dict = {"allow_origins": _settings.cors_origin_list}
+else:
+    _cors_kwargs = {"allow_origin_regex": ".*"}
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=get_settings().cors_origin_list,
+    **_cors_kwargs,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

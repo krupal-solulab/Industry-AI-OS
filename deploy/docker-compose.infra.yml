@@ -194,9 +194,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    # Langfuse (busybox shell + wget available) — probe the public health endpoint.
+    # Langfuse (busybox shell + wget). Its Next.js server binds to the container IP, not
+    # 127.0.0.1, so probe $(hostname -i) rather than localhost (which is refused inside).
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:3000/api/public/health"]
+      test: ["CMD-SHELL", "wget -q -O - http://$(hostname -i):3000/api/public/health"]
       interval: 15s
       timeout: 5s
       retries: 20
