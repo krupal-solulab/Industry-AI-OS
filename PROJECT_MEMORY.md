@@ -44,8 +44,11 @@ Web App (separate track) → Gateway (REST+GraphQL) → services → infra
 - **Infra** (`deploy/docker-compose.infra.yml`, 11 containers): postgres+pgvector,
   keycloak, cerbos, minio, redis/valkey, nats, temporal (+ui), langfuse, litellm,
   otel-collector, infisical (opt-in `secrets` profile).
-- **Schema**: one Alembic migration `deploy/migrations/versions/0001_*` — canonical
-  tables + RLS on all tenant-owned tables + append-only audit trigger + least-priv grants.
+- **Schema**: Alembic migrations `deploy/migrations/versions/0001_*`–`0003_*` — canonical
+  tables + workflow pack framework tables + `user_profiles` (role/login_source), all with
+  RLS + append-only audit trigger + least-priv grants.
+- **App database is now Neon** (shared team Postgres, not the local container) — see D9.
+  Keycloak/Temporal/Langfuse still use the local `docker-compose.infra.yml` Postgres.
 
 ## 3. Decisions (do not silently reverse)
 
@@ -59,20 +62,33 @@ Web App (separate track) → Gateway (REST+GraphQL) → services → infra
 | D6 | Gateway mints signed context from JWT; no service trusts client-supplied tenant id | `X-AIOS-Context`, HMAC. |
 | D7 | ONE generic workflow only: `document_review_approval` (Temporal, human-in-loop) | No industry workflows in core. |
 | D8 | Connector Hub is the ONLY layer touching third-party APIs | `Connector` ABC: `invoke(tool, args, config)`. |
+| D9 | App DB (tenants/documents/chat/workflows/audit/user_profiles) moved to **Neon** (shared team dev Postgres); Keycloak/Temporal/Langfuse stay on the local container | User-chosen, 2026-07-10. App runtime connects as restricted `aios_app` role (`NOSUPERUSER NOBYPASSRLS`); migrations/seed connect as `neondb_owner`. |
+| D10 | Self-service signup: **Keycloak stays the credential store/token issuer** (ADR-0001 unchanged); a new `user_profiles` table in the app DB carries platform-only fields (`role`, `login_source`) keyed by email | User-chosen, 2026-07-10. Public signups always land as `member` of the shared `demo` tenant — never owner/admin (privilege-escalation guard). |
 
 ## 4. Constraints / gotchas
 
-- **C1 — Docker daemon was DOWN this session.** The full stack was **never booted**.
-  Everything was verified statically/offline (see §6). First run: `make up` then
-  `make health` — expect first-boot debugging of image tags/healthchecks.
+- **C1 — RESOLVED 2026-07-10.** Docker daemon is up; the full stack boots and runs
+  live (see Change Log). Originally: "daemon was down this session, stack never booted."
 - **C2 — Commits are NOT being made.** Global git GPG signing uses a passphrase-protected
   key that can't prompt non-interactively (hangs). Per user, we **build without committing**;
   the user commits later with their signing setup. Do not attempt `git commit` unless asked.
 - **C3 — Secrets**: `.env.example` only. Never commit `.env`. Boots green with empty
-  `*_API_KEY` (LLM calls just fail at request time until keys are set).
+  `*_API_KEY` (LLM calls just fail at request time until keys are set). The live Neon
+  connection strings (D9) also live only in the local `.env` (gitignored) — share with
+  teammates out-of-band (password manager/DM), not by committing them anywhere.
 - **C4 — Keycloak issuer split**: JWKS fetched via internal `KEYCLOAK_URL` (docker),
   `iss` validated against public `KEYCLOAK_ISSUER` (localhost:8081). Keep both aligned.
-- **C5 — Windows host**: line-ending warnings (CRLF) are expected/benign.
+- **C5 — Windows host CRLF is NOT just a benign warning.** `deploy/seed/run.sh` and
+  `deploy/scripts/health.sh` had CRLF line endings and **actually failed** at runtime
+  inside their Linux containers (`set -euo pipefail` parsed as an invalid option named
+  `pipefail<CR>`) — fixed 2026-07-10 (`sed -i 's/\r$//'`). Any shell script touched on
+  this Windows host needs its line endings checked before it's trusted to run.
+- **C6 — Keycloak access tokens on this realm carry no `sub` claim.** `ctx.user_id`
+  (from `auth.py::context_from_jwt`) therefore resolves to `preferred_username`/email,
+  not the Keycloak internal user UUID, everywhere in the platform. Any new code that
+  joins on "the user id" from a `TenantContext` should join on **email**, not assume
+  it's a UUID — this bit the first version of the `/me` + `user_profiles` join
+  (2026-07-10 Change Log entry).
 
 ## 5. Completed (Milestone 1)
 
@@ -86,6 +102,11 @@ Web App (separate track) → Gateway (REST+GraphQL) → services → infra
 - [x] Helm chart (renders app services from values; infra via subcharts).
 - [x] Smoke tests (health + DoD e2e + authz) with skip-if-stack-down.
 - [x] 15 ADRs + ARCHITECTURE + MULTI_TENANCY + DEPLOYMENT + API docs + GraphQL SDL.
+- [x] Live stack booted end-to-end on the user's machine (2026-07-10).
+- [x] App DB migrated to shared Neon Postgres, with a least-priv `aios_app` role;
+      RLS isolation live-verified (2026-07-10).
+- [x] Self-service signup (`POST /auth/register`) + DB-backed `role`/`login_source`
+      user profile, live-verified end-to-end (2026-07-10).
 
 ## 6. Verification status (what was actually run)
 
@@ -98,17 +119,26 @@ Web App (separate track) → Gateway (REST+GraphQL) → services → infra
 | Alembic migration offline SQL | ✅ exit 0, 189 lines DDL |
 | `docker compose config` (infra + full) | ✅ valid, 22 services |
 | GraphQL SDL export | ✅ `docs/api/graphql.schema.graphql` |
-| **Live `docker-compose up` end-to-end** | ❌ NOT RUN (C1 — daemon down) |
+| **Live `docker-compose up` end-to-end** | ✅ all 9 services + infra healthy (2026-07-10) |
+| Login → JWT → `/api/identity/me` (live, real Keycloak) | ✅ pass (2026-07-10) |
+| Neon RLS isolation (tenant A/B/no-tenant reads) | ✅ pass (2026-07-10) |
+| Self-service signup → auto-login → `/me` returns role+login_source | ✅ pass (2026-07-10) |
 | Helm `helm template` render | ❌ NOT RUN (helm not installed) |
 
 ## 7. Pending tasks / next steps
 
 **Immediate (finish Milestone 1 acceptance):**
-- [ ] Boot the stack: `make up`, then `make health`; fix any first-boot image/healthcheck issues.
+- [x] Boot the stack — done 2026-07-10 (see Change Log).
 - [ ] Run `make smoke` against the live stack; confirm the DoD flow (login → chat →
       upload → RAG → approval workflow → audit) passes.
 - [ ] Set `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` in `.env` to exercise chat/embeddings/RAG.
 - [ ] Install helm and `helm template deploy/helm` to validate charts.
+- [ ] Backfill `user_profiles` rows for the 4 original demo users (`owner/admin/member/
+      viewer@demo.aios.local`) — they predate the signup flow (D10) and currently have
+      no profile row, so `/me` returns `role: null, login_source: null` for them.
+- [ ] Fix `services/admin/main.py:86,117` — compares `tenants.id` (uuid) against the
+      tenant slug string with no cast; `/api/admin/tenant` 500s. Pre-existing, found
+      2026-07-10, not fixed (out of scope of that task).
 
 **Deferred / known gaps (NOT core; for later milestones):**
 - [ ] **OCR** for scanned docs/images (PaddleOCR / cloud Doc AI) — only genuine capability
@@ -126,9 +156,15 @@ Web App (separate track) → Gateway (REST+GraphQL) → services → infra
   `authz.py`, `audit.py`, `llm.py`, `tenant_context.py`, `settings.py`).
 - Each service: `services/<name>/src/<name>/main.py`.
 - Deploy: `deploy/docker-compose.yml` (full), `deploy/docker-compose.infra.yml`,
-  `deploy/Dockerfile.service`, `deploy/migrations/`, `deploy/seed/`, `deploy/helm/`.
+  `deploy/Dockerfile.service`, `deploy/migrations/` (incl. `0003_user_profiles.py`),
+  `deploy/seed/`, `deploy/helm/`.
 - Docs: `docs/ARCHITECTURE.md`, `docs/adr/`, `docs/MULTI_TENANCY.md`, `docs/api/`.
-- Demo login (after seed): `owner@demo.aios.local` / `Passw0rd!` (also admin/member/viewer).
+- Auth: login = `POST /auth/token` (unchanged); signup = `POST /auth/register`
+  (gateway) → `POST /internal/register` (identity, not exposed through the generic
+  proxy — see D10, C6). `.env`: `DATABASE_URL`/`DATABASE_URL_SYNC` now point at Neon
+  (D9), `POSTGRES_*` vars remain for the local Keycloak/Temporal/Langfuse Postgres.
+- Demo login (after seed): `owner@demo.aios.local` / `Passw0rd!` (also admin/member/viewer)
+  — these 4 predate D10 and have no `user_profiles` row yet (see §7 pending).
 
 ---
 
@@ -265,5 +301,84 @@ Web App (separate track) → Gateway (REST+GraphQL) → services → infra
   (Docker hostnames), NOT `.env.local.example` (localhost / host-uvicorn only).
 - **Next (unchanged):** wire Temporal PackWorkflow executor + workflows API + DB runner +
   pack seed; register Nango/Composio connectors once creds exist.
+
+### 2026-07-10 — App DB migrated to shared Neon Postgres (D9)
+- **What:** Wired the platform's own app data (tenants/documents/chat/workflows/audit)
+  onto a shared team Neon Postgres instance, decoupled from the local Docker Postgres
+  container (which still backs Keycloak/Temporal/Langfuse — untouched).
+  - Created a restricted `aios_app` role on Neon (`NOSUPERUSER NOBYPASSRLS`) + enabled
+    `vector`/`uuid-ossp` extensions.
+  - `.env`: `DATABASE_URL` (async runtime) → Neon via `aios_app`; `DATABASE_URL_SYNC`
+    (migrations/seed) → Neon via `neondb_owner` (needed for `CREATE EXTENSION`/`GRANT`).
+  - Ran migrations 0001+0002 and the seed script against Neon; all 9 app services
+    recreated against the new `.env`.
+  - **Fixed a real bug found along the way**: `deploy/seed/run.sh` and
+    `deploy/scripts/health.sh` had Windows CRLF line endings, which broke
+    `set -euo pipefail` inside their Linux containers (parsed as an invalid option
+    named `pipefail<CR>`) — the seed container was silently exiting 2. Stripped `\r`
+    from both files; see C5 (corrected — this is not just a benign warning).
+- **Why:** User wants the whole team developing against one shared dev database
+  instead of everyone's own local Postgres container.
+- **Verified live:** login → JWT → `/api/identity/me` over Neon; `aios_app` role
+  attributes (`rolsuper=false`, `rolbypassrls=false`); RLS isolation (tenant A can't
+  see tenant B's rows; no-tenant-set sees nothing); `/api/knowledge/documents` reads
+  correctly (empty, as expected).
+- **Found, not fixed (pre-existing, unrelated):** `services/admin/src/admin/main.py:86,117`
+  — `WHERE id = :id OR keycloak_org_id = :id OR slug = :slug` compares the uuid `id`
+  column against a non-uuid string with no cast; `/api/admin/tenant` 500s regardless of
+  DB backend. Flagged in §7, not fixed (out of scope of this change).
+- **Files:** `.env` (not committed — gitignored), `deploy/seed/run.sh`,
+  `deploy/scripts/health.sh`.
+- **Next:** distribute the Neon connection string to teammates out-of-band (not
+  committed); consider wiring Infisical (ADR-0014, already opt-in in the stack) instead
+  of passing the raw string around by hand.
+
+### 2026-07-10 — Self-service signup + DB-backed role/login_source (D10)
+- **What:** Built real public signup, on top of the existing "login works, signup is a
+  stub" state. Kept Keycloak as the credential store/token issuer (ADR-0001 unchanged)
+  — added a `user_profiles` table in the app DB for platform-only fields.
+  - `deploy/migrations/versions/0003_user_profiles.py`: `user_profiles` table
+    (`tenant_id`, `keycloak_user_id`, `email`, `role` CHECK'd to the existing
+    `owner/admin/member/viewer` vocabulary, `login_source` CHECK'd to
+    `accounting/legal/litigation/construction`), RLS + grants, same pattern as every
+    other table.
+  - `services/identity/src/identity/main.py`: new `POST /internal/register` (exempt
+    from the context-header requirement via the existing `/internal/*` convention —
+    server-to-server only, never proxied through the gateway's generic authenticated
+    route). Looks up the `demo` tenant's Keycloak org id, creates the Keycloak user,
+    assigns the `member` role (never owner/admin — public signup must not be able to
+    grant elevated privileges on a shared tenant), writes the `user_profiles` row.
+    `GET /me` extended to return `role`/`login_source`.
+  - `services/gateway/src/gateway/main.py`: new public `POST /auth/register` — calls
+    identity's `/internal/register`, then immediately performs the same Keycloak
+    password-grant as `/auth/token` so signup auto-logs-in.
+  - Frontend (`frontend-industory-ai-os`, separate repo): `SignupForm` no longer fakes
+    a delay — calls the real `register()`, added a "Your industry" (`login_source`)
+    dropdown, auto-navigates into `/app` on success. Dropped the now-meaningless
+    "Company" field (signup joins the single shared `demo` tenant, not a new org).
+- **Bug found + fixed during build:** this Keycloak client's **access tokens carry no
+  `sub` claim**, so `ctx.user_id` (`auth.py::context_from_jwt`) resolves to the email
+  everywhere on this platform, not a UUID. First version of the `/me` → `user_profiles`
+  join used `keycloak_user_id`, which never matched; fixed to match on email too. See
+  new constraint C6 — anything else that joins on "the user id" from `TenantContext`
+  should account for this.
+- **Decisions (user-confirmed):** Keycloak stays the auth engine, DB only carries
+  profile fields (D10); signup joins the single shared `demo` tenant, not a new tenant
+  per signup; role vocabulary stays `owner/admin/member/viewer` (not renamed to
+  `owner/manager/viewer`) — `login_source` is the only new dimension.
+- **Verified live:** signup → real Keycloak user created in `demo` org → `user_profiles`
+  row written → auto-login → `/me` returns `role: "member"`, `login_source` as chosen;
+  bad `login_source` → 422; duplicate email → clean error (not silent). Frontend:
+  `tsc --noEmit` clean, dev server boots clean, CORS preflight on `/auth/register` OK.
+  **Not verified:** an actual browser click-through (no browser access from this
+  session) — ask the user to confirm the UI feels right.
+- **Known gap:** the 4 original demo users (`owner/admin/member/viewer@demo.aios.local`)
+  predate this flow and have no `user_profiles` row — `/me` returns
+  `role: null, login_source: null` for them until backfilled (see §7).
+- **Files:** `deploy/migrations/versions/0003_user_profiles.py`,
+  `services/identity/src/identity/main.py`, `services/gateway/src/gateway/main.py`;
+  frontend: `src/api/client.ts`, `src/routes/index.tsx`.
+- **Next:** backfill profile rows for the 4 demo users; fix the unrelated
+  `services/admin` bug if desired; user to confirm real-browser signup/login UX.
 
 <!-- New agents: append your entry above this line. -->
