@@ -60,7 +60,7 @@
       "realmRoles": ["admin"]
     },
     {
-      "username": "member@demo.aios.local",
+      "username": "`member@demo.aios.local`",
       "email": "member@demo.aios.local",
       "firstName": "Demo",
       "lastName": "Member",

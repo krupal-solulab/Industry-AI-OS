@@ -33,7 +33,9 @@ app = create_app(
     health_registry=health,
 )
 
-_PUBLIC_PATHS = ("/healthz", "/readyz", "/docs", "/openapi.json", "/redoc", "/auth/token")
+_PUBLIC_PATHS = (
+    "/healthz", "/readyz", "/docs", "/openapi.json", "/redoc", "/auth/token", "/auth/register",
+)
 
 
 @app.middleware("http")
@@ -144,6 +146,30 @@ async def dev_token(body: TokenRequest) -> dict:
         return JSONResponse(status_code=401, content={"error": "invalid_credentials",
                             "detail": resp.text})
     return resp.json()
+
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    first_name: str
+    last_name: str
+    login_source: str
+
+
+# ---- public self-service signup ---------------------------------------------
+@app.post("/auth/register", tags=["auth"], status_code=201)
+async def register(body: RegisterRequest):
+    """Public signup: create the user (Keycloak + profile) via identity, then log
+    them straight in. No bearer token exists yet — this is one of the few gateway
+    routes that calls a downstream service directly rather than through the
+    context-signed proxy (identity's /internal/register is exempt from the
+    context requirement for exactly this reason)."""
+    s = get_settings()
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.post(f"{s.identity_url}/internal/register", json=body.model_dump())
+    if resp.status_code >= 400:
+        return JSONResponse(status_code=resp.status_code, content=resp.json())
+    return await dev_token(TokenRequest(username=body.email, password=body.password))
 
 
 # ---- REST reverse proxy: /api/{service}/{path} ------------------------------
