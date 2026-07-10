@@ -44,11 +44,24 @@ Optional: add LLM keys to `.env` so chat/embeddings work — `ANTHROPIC_API_KEY`
 `OPENAI_API_KEY`. Without them the app runs; only AI features show "not configured".
 
 ## Everyday use
+
+**Pausing / resuming for the day — prefer `stop`/`start`, not `down`/`up`:**
 ```bash
-docker compose -f deploy/docker-compose.yml --env-file .env up -d      # start (fast, cached images)
+docker compose -f deploy/docker-compose.yml stop      # pause — keeps containers
+docker compose -f deploy/docker-compose.yml start     # resume — warm, ready in seconds
+```
+> ⚠️ `down` *removes* the containers, so the next `up` cold-starts everything. LiteLLM
+> re-registers its models on a cold start and takes ~2–3 min before it reports healthy
+> (Compose waits for it — that's normal, not a hang). `stop`/`start` avoids that wait
+> entirely. Use `down` only when you actually want to recreate containers (e.g. after
+> editing `docker-compose*.yml` or `.env`).
+
+**Other commands:**
+```bash
+docker compose -f deploy/docker-compose.yml --env-file .env up -d      # first start / after config changes
 docker compose -f deploy/docker-compose.yml ps                          # status — wait for "healthy"
 docker compose -f deploy/docker-compose.yml logs -f gateway workflows   # tail logs
-docker compose -f deploy/docker-compose.yml down                        # stop (keeps data)
+docker compose -f deploy/docker-compose.yml down                        # remove containers (keeps data volumes)
 ```
 - Add `--build` **only** when backend code / a Dockerfile changes (incremental: only the
   changed service rebuilds).

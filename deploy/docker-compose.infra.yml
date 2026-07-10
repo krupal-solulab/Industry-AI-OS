@@ -230,7 +230,9 @@ services:
       interval: 15s
       timeout: 5s
       retries: 10
-      start_period: 20s
+      # Cold start registers 4 models (+ optional Langfuse); can take ~2-3 min. Probes
+      # that fail during start_period do NOT mark the container unhealthy, so give it room.
+      start_period: 150s
     networks: [aios]
 
   # ---------------------------------------------------------- OTel Collector
