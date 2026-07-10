@@ -1,0 +1,70 @@
+{
+  "$schema": "aios.workflow/v1",
+  "key": "progress_report",
+  "pack": "construction",
+  "version": "1.0.0",
+  "business_goal": "Compile a weekly executive progress report from progress, budget, delays, and open RFIs, then distribute after approval.",
+  "personas": { "primary": "construction_project_manager", "supporting": ["project_manager"] },
+  "trigger": { "type": "schedule", "source": "cron: 0 8 * * 1" },
+  "inputs": [{ "key": "project_id", "type": "string", "required": true }],
+  "connectors_required": ["composio.procore", "composio.primavera", "nango.outlook"],
+  "steps": [
+    {
+      "id": "progress",
+      "type": "connector.call",
+      "name": "Retrieve progress",
+      "config": { "connector": "composio.procore", "tool": "get_progress", "arguments": { "project_id": "{{ inputs.project_id }}" } }
+    },
+    {
+      "id": "budget",
+      "type": "connector.call",
+      "name": "Retrieve budget",
+      "config": { "connector": "composio.procore", "tool": "get_budget", "arguments": { "project_id": "{{ inputs.project_id }}" } }
+    },
+    {
+      "id": "delays",
+      "type": "connector.call",
+      "name": "Retrieve delays",
+      "config": { "connector": "composio.primavera", "tool": "get_delays", "arguments": { "project_id": "{{ inputs.project_id }}" } }
+    },
+    {
+      "id": "open_rfis",
+      "type": "connector.call",
+      "name": "Retrieve open RFIs",
+      "config": { "connector": "composio.procore", "tool": "list_open_rfis", "arguments": { "project_id": "{{ inputs.project_id }}" } }
+    },
+    {
+      "id": "executive_summary",
+      "type": "ai.action",
+      "name": "AI writes the executive summary",
+      "config": {
+        "prompt": "progress_report",
+        "context": {
+          "progress": "{{ steps.progress.out }}",
+          "budget": "{{ steps.budget.out }}",
+          "delays": "{{ steps.delays.out }}",
+          "open_rfis": "{{ steps.open_rfis.out }}"
+        }
+      }
+    },
+    {
+      "id": "manager_review",
+      "type": "approval",
+      "name": "Manager approval",
+      "config": { "summary": "{{ steps.executive_summary.out.text }}" }
+    },
+    {
+      "id": "email_stakeholders",
+      "type": "notify",
+      "name": "Email the report to stakeholders",
+      "config": {
+        "connector": "nango.outlook",
+        "tool": "send_message",
+        "arguments": { "subject": "Weekly Project Progress Report", "body": "{{ steps.executive_summary.out.text }}" }
+      }
+    }
+  ],
+  "approvals": [{ "step": "manager_review", "approver_persona": "construction_project_manager" }],
+  "outputs": [{ "key": "executive_summary", "type": "string", "from": "{{ steps.executive_summary.out.text }}" }],
+  "business_value": "Weekly executive reporting assembled automatically across systems; one approval before distribution."
+}

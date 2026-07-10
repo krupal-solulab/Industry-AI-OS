@@ -1,0 +1,39 @@
+{
+  "key": "construction",
+  "name": "Construction AI OS",
+  "industry": "construction",
+  "version": "1.0.0",
+  "description": "Copilots that automate repetitive construction workflows — RFIs, change orders, daily reports, invoice verification, and progress reporting.",
+  "personas": [
+    "project_engineer",
+    "project_manager",
+    "site_engineer",
+    "project_accountant",
+    "construction_project_manager",
+    "quantity_surveyor",
+    "procurement_manager"
+  ],
+  "persona_roles": [
+    { "persona": "project_manager", "roles": ["owner", "admin"] },
+    { "persona": "construction_project_manager", "roles": ["owner", "admin"] },
+    { "persona": "project_accountant", "roles": ["owner", "admin"] },
+    { "persona": "project_engineer", "roles": ["owner", "admin", "member"] },
+    { "persona": "site_engineer", "roles": ["owner", "admin", "member"] }
+  ],
+  "connectors": [
+    "nango.outlook",
+    "nango.gmail",
+    "nango.teams",
+    "nango.sharepoint",
+    "composio.procore",
+    "composio.autodesk",
+    "composio.primavera"
+  ],
+  "workflows": [
+    "rfi",
+    "change_order",
+    "daily_report",
+    "invoice_verification",
+    "progress_report"
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "$schema": "aios.workflow/v1",
+  "key": "invoice_verification",
+  "pack": "construction",
+  "version": "1.0.0",
+  "business_goal": "Verify a subcontractor invoice against its purchase order and completed work, flag discrepancies, and route for payment approval.",
+  "personas": { "primary": "project_accountant", "supporting": ["procurement_manager", "project_manager"] },
+  "trigger": { "type": "email", "source": "nango.outlook" },
+  "inputs": [
+    { "key": "invoice_email", "type": "email", "required": true },
+    { "key": "project_id", "type": "string", "required": true }
+  ],
+  "connectors_required": ["nango.outlook", "composio.procore"],
+  "steps": [
+    {
+      "id": "read_email",
+      "type": "connector.call",
+      "name": "Read the invoice email",
+      "config": { "connector": "nango.outlook", "tool": "get_message", "arguments": { "message_id": "{{ inputs.invoice_email.id }}" } }
+    },
+    {
+      "id": "ocr_invoice",
+      "type": "document.parse",
+      "name": "OCR the invoice",
+      "config": { "files": "{{ steps.read_email.out.attachments }}" }
+    },
+    {
+      "id": "purchase_order",
+      "type": "connector.call",
+      "name": "Retrieve the purchase order",
+      "config": { "connector": "composio.procore", "tool": "get_purchase_order", "arguments": { "project_id": "{{ inputs.project_id }}" } }
+    },
+    {
+      "id": "work_completed",
+      "type": "connector.call",
+      "name": "Retrieve completed work",
+      "config": { "connector": "composio.procore", "tool": "get_completed_work", "arguments": { "project_id": "{{ inputs.project_id }}" } }
+    },
+    {
+      "id": "reconcile",
+      "type": "ai.action",
+      "name": "AI compares invoice vs PO and flags discrepancies",
+      "config": {
+        "prompt": "invoice_reconcile",
+        "output": "json",
+        "context": {
+          "invoice": "{{ steps.ocr_invoice.out.text }}",
+          "purchase_order": "{{ steps.purchase_order.out }}",
+          "work_completed": "{{ steps.work_completed.out }}"
+        }
+      }
+    },
+    {
+      "id": "approval",
+      "type": "approval",
+      "name": "Payment approval",
+      "config": { "summary": "{{ steps.reconcile.out.text }}" }
+    },
+    {
+      "id": "approve_payment",
+      "type": "connector.call",
+      "name": "Approve payment in the system of record",
+      "config": { "connector": "composio.procore", "tool": "approve_payment", "arguments": { "project_id": "{{ inputs.project_id }}" } }
+    },
+    {
+      "id": "notify_vendor",
+      "type": "notify",
+      "name": "Notify the vendor",
+      "config": { "connector": "nango.outlook", "tool": "send_message", "arguments": { "to": "{{ steps.read_email.out.from }}", "subject": "Invoice processed", "body": "{{ steps.reconcile.out.text }}" } }
+    }
+  ],
+  "approvals": [{ "step": "approval", "approver_persona": "project_accountant" }],
+  "outputs": [{ "key": "discrepancies", "type": "string", "from": "{{ steps.reconcile.out.text }}" }],
+  "business_value": "Catches invoice/PO mismatches automatically; faster, auditable payment approvals."
+}

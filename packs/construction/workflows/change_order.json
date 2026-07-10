@@ -1,0 +1,78 @@
+{
+  "$schema": "aios.workflow/v1",
+  "key": "change_order",
+  "pack": "construction",
+  "version": "1.0.0",
+  "business_goal": "Assess a change request against budget, schedule, and existing change orders, then draft a change order for manager approval.",
+  "personas": { "primary": "project_manager", "supporting": ["quantity_surveyor"] },
+  "trigger": { "type": "manual" },
+  "inputs": [
+    { "key": "project_id", "type": "string", "required": true },
+    { "key": "change_request", "type": "string", "required": true }
+  ],
+  "connectors_required": ["composio.procore", "composio.primavera", "nango.teams"],
+  "steps": [
+    {
+      "id": "budget",
+      "type": "connector.call",
+      "name": "Retrieve budget",
+      "config": { "connector": "composio.procore", "tool": "get_budget", "arguments": { "project_id": "{{ inputs.project_id }}" } }
+    },
+    {
+      "id": "schedule",
+      "type": "connector.call",
+      "name": "Retrieve schedule",
+      "config": { "connector": "composio.primavera", "tool": "get_schedule", "arguments": { "project_id": "{{ inputs.project_id }}" } }
+    },
+    {
+      "id": "existing_changes",
+      "type": "connector.call",
+      "name": "Retrieve existing change orders",
+      "config": { "connector": "composio.procore", "tool": "list_change_orders", "arguments": { "project_id": "{{ inputs.project_id }}" } }
+    },
+    {
+      "id": "impact",
+      "type": "ai.action",
+      "name": "AI estimates cost, schedule, and risk impact",
+      "config": {
+        "prompt": "change_order_impact",
+        "output": "json",
+        "context": {
+          "request": "{{ inputs.change_request }}",
+          "budget": "{{ steps.budget.out }}",
+          "schedule": "{{ steps.schedule.out }}",
+          "existing_change_orders": "{{ steps.existing_changes.out }}"
+        }
+      }
+    },
+    {
+      "id": "manager_review",
+      "type": "approval",
+      "name": "Manager approval",
+      "config": { "summary": "{{ steps.impact.out.text }}" }
+    },
+    {
+      "id": "create_change_order",
+      "type": "connector.call",
+      "name": "Create the change order in Procore",
+      "config": {
+        "connector": "composio.procore",
+        "tool": "create_change_order",
+        "arguments": { "project_id": "{{ inputs.project_id }}", "summary": "{{ steps.impact.out.text }}" }
+      }
+    },
+    {
+      "id": "notify_stakeholders",
+      "type": "notify",
+      "name": "Notify stakeholders",
+      "config": {
+        "connector": "nango.teams",
+        "tool": "post_message",
+        "arguments": { "text": "Change order created for project {{ inputs.project_id }}." }
+      }
+    }
+  ],
+  "approvals": [{ "step": "manager_review", "approver_persona": "project_manager" }],
+  "outputs": [{ "key": "change_order_summary", "type": "string", "from": "{{ steps.impact.out.text }}" }],
+  "business_value": "Removes manual budget/schedule cross-checking; consistent impact analysis before any commitment."
+}

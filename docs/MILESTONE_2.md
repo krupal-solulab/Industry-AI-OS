@@ -1,8 +1,18 @@
 # Milestone 2 — Workflow Pack Framework
 
-> Status: **Design (for review)**. No code yet. See [ADR-0015](adr/0015-workflow-pack-framework.md).
-> Builds directly on the Milestone 1 platform. **Contains zero industry logic** — the
-> Construction pack is Milestone 3, Legal is Milestone 4.
+> Status: **Engine core built + verified; runtime wiring pending.** See
+> [ADR-0015](adr/0015-workflow-pack-framework.md). Builds on the Milestone 1 platform.
+>
+> **Built + verified (offline):** the definition schema/validator, the safe expression
+> resolver, the generic `WorkflowEngine` (incl. human-approval flow), the pack registry,
+> the demo pack, the **Construction pack (all 5 workflows)**, the step-handler bridge, and
+> migration 0002 — 12 unit tests pass, ruff clean, migration applies. See `packages/shared/
+> src/ai_os_shared/workflow/`, `packs/`, `services/workflows/src/workflows/step_handlers.py`.
+>
+> **Pending (needs live stack + connector creds):** the Temporal `PackWorkflow` executor,
+> DB-backed run persistence, the workflows HTTP API, pack seeding into the DB registry, and
+> registering Nango/Composio in the Connector Hub. The Construction pack is authored as
+> data here (Milestone 3 makes it live once connectors are configured).
 
 ## 1. Goal & principle
 

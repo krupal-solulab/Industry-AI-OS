@@ -212,4 +212,58 @@ Web App (separate track) → Gateway (REST+GraphQL) → services → infra
   Connector Registry (Nango/Composio live), data-model migration, seed, smoke tests.
   Then M3 = Construction pack (RFI first).
 
+### 2026-07-09 — Milestone 2 build (engine core + packs) — VERIFIED offline
+- **What:** Built the Workflow Pack Framework's core and authored the construction pack.
+  - `packages/shared/src/ai_os_shared/workflow/`: `schema.py` (WorkflowDefinition +
+    PackManifest, 11-part template, validation), `expr.py` (safe `{{ }}` resolver, no
+    eval), `engine.py` (generic `WorkflowEngine` — step sequencing, context, approval as
+    a handler), `registry.py` (load/validate packs).
+  - `packs/demo/` (document_review) + `packs/construction/` (rfi, change_order,
+    daily_report, invoice_verification, progress_report) with prompts. All validate.
+  - `services/workflows/src/workflows/step_handlers.py`: DI factory bridging step types
+    to LLM / Connector Hub / Knowledge / approval. **Connector.call routes to the
+    Connector Hub — this is where Nango/Composio plug in once creds exist.**
+  - `deploy/migrations/versions/0002_workflow_pack_framework.py`: workflow_packs,
+    workflow_definitions, workflow_runs, workflow_step_runs, approval_tasks (+RLS).
+- **Verified:** 12 unit tests pass (schema, expr, engine end-to-end incl. approval; all
+  6 pack definitions validate); ruff clean; migration 0002 applies via offline SQL (exit 0).
+- **NOT yet built / not verified (needs live stack + creds):** the Temporal `PackWorkflow`
+  executor, the DB-backed run persistence, the workflows HTTP API (runs/approvals), pack
+  seeding into the DB registry, and the real Connector Hub entries for nango.*/composio.*
+  (they return "not_configured" until configured). `step_handlers.py` is compile-checked,
+  not run.
+- **Decision recorded:** `docs/adr/0015` + `docs/MILESTONE_2.md`.
+- **Next:** (1) wire the Temporal PackWorkflow + activities + approval signal using
+  `WorkflowEngine` + `build_handlers`; (2) add the workflows API + DB runner + pack seed;
+  (3) register Nango/Composio connectors in the Connector Hub with the tools the
+  construction definitions call (get_message, get_drawings, update_rfi, etc.) once the
+  user provides accounts/credentials.
+
+### 2026-07-10 — Full stack brought up under Docker Compose — VERIFIED running
+- **What:** First successful end-to-end boot of the whole stack on the user's Windows
+  machine. Fixed the blockers that surfaced on a clean `up`:
+  1. **Disk exhaustion** (C: hit 100%): the `knowledge` image pulled the full torch+CUDA
+     stack (~8 GB) via Docling, corrupting layer writes. Slimmed
+     `services/knowledge/pyproject.toml` — removed `docling` and `llama-index-core` (both
+     were already guarded/optional in `parsing.py`, which falls back to plain-text
+     extraction + char-window chunking). Image ~8 GB → ~1 GB.
+  2. **Cerbos crash-loop:** `common_roles` derived-roles file lived in
+     `deploy/cerbos/policies/_schemas/` — but `_schemas` is a Cerbos-reserved dir (schemas
+     only), so policies there aren't loaded → all 7 resource policies failed their import.
+     Moved it to `deploy/cerbos/policies/derived_roles.yaml`; removed the empty `_schemas`.
+  3. **All healthchecks used a bash-only `/dev/tcp` probe** but the images use dash/busybox
+     or no shell. Rewrote them: app services (`docker-compose.yml` `x-service-base`) +
+     `litellm` → `python -c urllib.urlopen(...)`; `langfuse` → `wget`; `nats` (scratch
+     image, no shell) → healthcheck removed (nothing gates on it).
+- **Verified:** `docker compose ps` — all 9 app services + core infra **healthy**;
+  `seed` and `minio-init` `Exited (0)`; gateway `GET /healthz` and `/readyz` return ok.
+  `langfuse` settles to healthy ~1-2 min after boot (runs its own migrations; non-critical).
+- **Also added:** `ai-backend/RUNNING.md` — run guide for teammates (first-run vs daily,
+  `.env.example` vs `.env.local.example`, ports, demo logins, troubleshooting).
+- **Note for compose:** always run from `ai-backend/` with
+  `docker compose -f deploy/docker-compose.yml --env-file .env <cmd>`; use `.env.example`
+  (Docker hostnames), NOT `.env.local.example` (localhost / host-uvicorn only).
+- **Next (unchanged):** wire Temporal PackWorkflow executor + workflows API + DB runner +
+  pack seed; register Nango/Composio connectors once creds exist.
+
 <!-- New agents: append your entry above this line. -->

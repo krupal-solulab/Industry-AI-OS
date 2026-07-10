@@ -1,16 +1,18 @@
 [project]
 name = "aios-knowledge"
 version = "0.1.0"
-description = "Industry AI OS — knowledge layer: MinIO storage, Docling parsing, chunking, pgvector RAG."
+description = "Industry AI OS — knowledge layer: MinIO storage, chunking, pgvector RAG."
 requires-python = ">=3.11"
+# NOTE: Docling and LlamaIndex are intentionally NOT hard dependencies. They drag in
+# torch + CUDA (~8 GB) which we don't use on CPU, and `parsing.py` already degrades
+# gracefully (Docling -> plain-text extraction; LlamaIndex splitter -> char-window
+# fallback) when they're absent. Add them back behind a build arg only if/when
+# layout-aware parsing/OCR is actually needed.
 dependencies = [
     "ai-os-shared",
     "uvicorn[standard]>=0.30",
     "python-multipart>=0.0.9",
     "minio>=7.2",
-    "llama-index-core>=0.11",
-    # Docling is heavy; parsing degrades to plain-text extraction if unavailable.
-    "docling>=2.0; python_version < '4.0'",
 ]
 
 [tool.uv.sources]

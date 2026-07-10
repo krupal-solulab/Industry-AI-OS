@@ -16,10 +16,15 @@ x-service-base: &service-base
     - ../.env
   restart: unless-stopped
   networks: [aios]
+  # Service images are Debian-slim (/bin/sh = dash, no curl), so the bash-only
+  # /dev/tcp trick fails and marks healthy services unhealthy. Probe /healthz with
+  # Python's urllib instead (always present); non-200 raises -> exit 1.
   healthcheck:
     test:
-      - "CMD-SHELL"
-      - "exec 3<>/dev/tcp/localhost/8000; echo -e 'GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3; cat <&3 | grep -q '200\\|ok'"
+      - "CMD"
+      - "python"
+      - "-c"
+      - "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"
     interval: 10s
     timeout: 5s
     retries: 10

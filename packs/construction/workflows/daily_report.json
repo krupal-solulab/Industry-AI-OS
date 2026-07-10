@@ -1,0 +1,69 @@
+{
+  "$schema": "aios.workflow/v1",
+  "key": "daily_report",
+  "pack": "construction",
+  "version": "1.0.0",
+  "business_goal": "Assemble the daily site report from emails, photos, task progress, and equipment status, then route it for manager review.",
+  "personas": { "primary": "site_engineer", "supporting": ["project_manager"] },
+  "trigger": { "type": "schedule", "source": "cron: 0 17 * * 1-5" },
+  "inputs": [{ "key": "project_id", "type": "string", "required": true }],
+  "connectors_required": ["nango.outlook", "composio.procore"],
+  "steps": [
+    {
+      "id": "collect_emails",
+      "type": "connector.call",
+      "name": "Collect the day's site emails",
+      "config": { "connector": "nango.outlook", "tool": "list_messages", "arguments": { "query": "site update", "since": "today" } }
+    },
+    {
+      "id": "parse_notes",
+      "type": "document.parse",
+      "name": "OCR site notes / photos",
+      "config": { "files": "{{ steps.collect_emails.out.attachments }}" }
+    },
+    {
+      "id": "task_progress",
+      "type": "connector.call",
+      "name": "Retrieve task progress",
+      "config": { "connector": "composio.procore", "tool": "get_task_progress", "arguments": { "project_id": "{{ inputs.project_id }}" } }
+    },
+    {
+      "id": "equipment",
+      "type": "connector.call",
+      "name": "Retrieve equipment status",
+      "config": { "connector": "composio.procore", "tool": "get_equipment_status", "arguments": { "project_id": "{{ inputs.project_id }}" } }
+    },
+    {
+      "id": "generate_report",
+      "type": "ai.action",
+      "name": "AI generates the daily report",
+      "config": {
+        "prompt": "daily_report",
+        "context": {
+          "notes": "{{ steps.parse_notes.out.text }}",
+          "task_progress": "{{ steps.task_progress.out }}",
+          "equipment": "{{ steps.equipment.out }}"
+        }
+      }
+    },
+    {
+      "id": "manager_review",
+      "type": "approval",
+      "name": "Manager review",
+      "config": { "summary": "{{ steps.generate_report.out.text }}" }
+    },
+    {
+      "id": "email_report",
+      "type": "notify",
+      "name": "Email the daily report",
+      "config": {
+        "connector": "nango.outlook",
+        "tool": "send_message",
+        "arguments": { "subject": "Daily Site Report", "body": "{{ steps.generate_report.out.text }}" }
+      }
+    }
+  ],
+  "approvals": [{ "step": "manager_review", "approver_persona": "project_manager" }],
+  "outputs": [{ "key": "report", "type": "string", "from": "{{ steps.generate_report.out.text }}" }],
+  "business_value": "Eliminates manual end-of-day reporting; consistent, complete site reports with a review gate."
+}

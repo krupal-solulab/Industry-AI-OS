@@ -1,0 +1,113 @@
+{
+  "$schema": "aios.workflow/v1",
+  "key": "rfi",
+  "pack": "construction",
+  "version": "1.0.0",
+  "business_goal": "Process RFIs, gather project context, draft responses, and route them for project manager approval.",
+  "personas": {
+    "primary": "project_engineer",
+    "supporting": ["project_manager", "site_engineer"]
+  },
+  "trigger": { "type": "email", "source": "nango.outlook" },
+  "inputs": [
+    { "key": "rfi_email", "type": "email", "required": true, "description": "Inbound RFI email" },
+    { "key": "project_id", "type": "string", "required": true }
+  ],
+  "connectors_required": ["nango.outlook", "composio.procore", "composio.autodesk"],
+  "steps": [
+    {
+      "id": "read_email",
+      "type": "connector.call",
+      "name": "Read the RFI email",
+      "config": {
+        "connector": "nango.outlook",
+        "tool": "get_message",
+        "arguments": { "message_id": "{{ inputs.rfi_email.id }}" }
+      }
+    },
+    {
+      "id": "parse_attachments",
+      "type": "document.parse",
+      "name": "OCR / parse attachments",
+      "config": { "files": "{{ steps.read_email.out.attachments }}" }
+    },
+    {
+      "id": "drawings",
+      "type": "connector.call",
+      "name": "Retrieve project drawings",
+      "config": {
+        "connector": "composio.procore",
+        "tool": "get_drawings",
+        "arguments": { "project_id": "{{ inputs.project_id }}" }
+      }
+    },
+    {
+      "id": "previous_rfis",
+      "type": "connector.call",
+      "name": "Retrieve previous RFIs",
+      "config": {
+        "connector": "composio.procore",
+        "tool": "search_rfis",
+        "arguments": { "project_id": "{{ inputs.project_id }}", "query": "{{ steps.parse_attachments.out.text }}" }
+      }
+    },
+    {
+      "id": "specifications",
+      "type": "connector.call",
+      "name": "Retrieve specifications",
+      "config": {
+        "connector": "composio.autodesk",
+        "tool": "get_specifications",
+        "arguments": { "project_id": "{{ inputs.project_id }}" }
+      }
+    },
+    {
+      "id": "draft_response",
+      "type": "ai.action",
+      "name": "AI drafts the RFI response",
+      "config": {
+        "prompt": "rfi_response",
+        "output": "json",
+        "context": {
+          "rfi": "{{ steps.parse_attachments.out.text }}",
+          "drawings": "{{ steps.drawings.out }}",
+          "previous_rfis": "{{ steps.previous_rfis.out }}",
+          "specifications": "{{ steps.specifications.out }}"
+        }
+      }
+    },
+    {
+      "id": "pm_review",
+      "type": "approval",
+      "name": "Project manager approval",
+      "config": { "summary": "{{ steps.draft_response.out.text }}" }
+    },
+    {
+      "id": "send_reply",
+      "type": "notify",
+      "name": "Send the response email",
+      "config": {
+        "connector": "nango.outlook",
+        "tool": "send_message",
+        "arguments": {
+          "to": "{{ steps.read_email.out.from }}",
+          "subject": "RE: {{ steps.read_email.out.subject }}",
+          "body": "{{ steps.draft_response.out.text }}"
+        }
+      }
+    },
+    {
+      "id": "update_rfi",
+      "type": "connector.call",
+      "name": "Update the RFI in Procore",
+      "config": {
+        "connector": "composio.procore",
+        "tool": "update_rfi",
+        "arguments": { "project_id": "{{ inputs.project_id }}", "response": "{{ steps.draft_response.out.text }}" }
+      }
+    }
+  ],
+  "approvals": [{ "step": "pm_review", "approver_persona": "project_manager" }],
+  "outputs": [{ "key": "response", "type": "string", "from": "{{ steps.draft_response.out.text }}" }],
+  "business_value": "Turns a multi-hour RFI turnaround into minutes; consistent, drawing-grounded, auditable responses."
+}

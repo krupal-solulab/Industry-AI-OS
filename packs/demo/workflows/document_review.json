@@ -1,0 +1,41 @@
+{
+  "$schema": "aios.workflow/v1",
+  "key": "document_review",
+  "pack": "demo",
+  "version": "1.0.0",
+  "business_goal": "Summarize a submitted document and route it for human sign-off — the reference flow proving the engine.",
+  "personas": { "primary": "member", "supporting": ["reviewer"] },
+  "trigger": { "type": "manual" },
+  "inputs": [{ "key": "text", "type": "string", "required": true, "description": "Document text to review" }],
+  "connectors_required": ["demo.echo"],
+  "steps": [
+    {
+      "id": "summarize",
+      "type": "ai.action",
+      "name": "AI summarizes the document",
+      "config": { "prompt": "summarize", "input": "{{ inputs.text }}" }
+    },
+    {
+      "id": "review",
+      "type": "approval",
+      "name": "Human review",
+      "config": { "summary": "{{ steps.summarize.out.text }}" }
+    },
+    {
+      "id": "notify",
+      "type": "notify",
+      "name": "Echo the decision",
+      "config": {
+        "connector": "demo.echo",
+        "tool": "echo",
+        "arguments": { "message": "Document review {{ steps.review.out.decision }}" }
+      }
+    }
+  ],
+  "approvals": [{ "step": "review", "approver_persona": "reviewer" }],
+  "outputs": [
+    { "key": "summary", "type": "string", "from": "{{ steps.summarize.out.text }}" },
+    { "key": "decision", "type": "string", "from": "{{ steps.review.out.decision }}" }
+  ],
+  "business_value": "Proves trigger → AI → human approval → action end to end with no industry logic."
+}

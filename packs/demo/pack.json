@@ -1,0 +1,14 @@
+{
+  "key": "demo",
+  "name": "Demo Pack",
+  "industry": "generic",
+  "version": "1.0.0",
+  "description": "Industry-neutral reference pack that proves the Workflow Pack Framework end to end.",
+  "personas": ["reviewer", "member"],
+  "persona_roles": [
+    { "persona": "reviewer", "roles": ["owner", "admin"] },
+    { "persona": "member", "roles": ["owner", "admin", "member"] }
+  ],
+  "connectors": ["demo.echo"],
+  "workflows": ["document_review"]
+}

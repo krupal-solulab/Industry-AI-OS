@@ -139,13 +139,9 @@ services:
     ports:
       - "4222:4222"
       - "8222:8222"
-    healthcheck:
-      test:
-        - "CMD-SHELL"
-        - "exec 3<>/dev/tcp/localhost/8222; echo -e 'GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3; cat <&3 | grep -q 'ok'"
-      interval: 10s
-      timeout: 5s
-      retries: 10
+    # The nats:2.10 image is built from scratch (no shell, no wget/curl), so no
+    # in-container healthcheck is possible. Nothing gates on its health, so we omit it;
+    # the monitoring endpoint is still on :8222/healthz for external probes.
     networks: [aios]
 
   # ---------------------------------------------------------------- Temporal
@@ -198,10 +194,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # Langfuse (busybox shell + wget available) — probe the public health endpoint.
     healthcheck:
-      test:
-        - "CMD-SHELL"
-        - "exec 3<>/dev/tcp/localhost/3000; echo -e 'GET /api/public/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3; cat <&3 | grep -q '200'"
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:3000/api/public/health"]
       interval: 15s
       timeout: 5s
       retries: 20
@@ -223,10 +218,15 @@ services:
       - ./litellm/config.yaml:/app/config.yaml:ro
     ports:
       - "4000:4000"
+    # NOTE: the LiteLLM image is Debian-based (/bin/sh = dash), so the bash-only
+    # /dev/tcp trick fails and marks a healthy proxy as unhealthy. Python is always
+    # present in this image, so probe liveliness with urllib (non-200 raises -> exit 1).
     healthcheck:
       test:
-        - "CMD-SHELL"
-        - "exec 3<>/dev/tcp/localhost/4000; echo -e 'GET /health/liveliness HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3; cat <&3 | grep -q '200\\|alive'"
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"
       interval: 15s
       timeout: 5s
       retries: 10
