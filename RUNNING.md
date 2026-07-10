@@ -5,6 +5,7 @@ The backend is the **Industry AI OS** platform: 9 FastAPI services + infrastruct
 orchestrated by Docker Compose.
 
 > **TL;DR for teammates**
+>
 > ```bash
 > cd ai-backend
 > cp .env.example .env            # Windows: copy .env.example .env
@@ -12,31 +13,36 @@ orchestrated by Docker Compose.
 > # after that, every day:
 > docker compose -f deploy/docker-compose.yml --env-file .env up -d           # no --build; starts in seconds
 > ```
+>
 > Gateway (the only public API) → http://localhost:8000  ·  API docs → http://localhost:8000/docs
 
 ---
 
 ## Prerequisites
+
 - **Docker Desktop** running, with **~15 GB free disk**.
 - Nothing else — you do NOT need Python, uv, or Keycloak installed locally; everything
   runs in containers.
 
 ## Which `.env`? (the #1 gotcha)
-| You run the backend with… | Copy this to `.env` | Why |
-|---|---|---|
+
+| You run the backend with…                    | Copy this to`.env`       | Why                                                            |
+| --------------------------------------------- | -------------------------- | -------------------------------------------------------------- |
 | **Docker Compose** (normal / teammates) | **`.env.example`** | URLs use Docker service names (`postgres`, `keycloak`, …) |
-| Bare `uvicorn` on the host (advanced) | `.env.local.example` | URLs use `localhost` + published ports |
+| Bare`uvicorn` on the host (advanced)        | `.env.local.example`     | URLs use`localhost` + published ports                        |
 
 > ⚠️ With `.env.local.example` under compose, the containers try to reach `localhost`
 > (themselves) instead of the `postgres`/`keycloak` containers and fail. For
 > `docker compose`, use **`.env.example`**.
 
 ## First run (one time)
+
 ```bash
 cd ai-backend
 cp .env.example .env                                   # Windows: copy .env.example .env
 docker compose -f deploy/docker-compose.yml --env-file .env up -d --build
 ```
+
 Builds the 9 service images and starts everything. A one-shot **`seed`** container runs
 DB migrations and registers the demo tenant, then exits (`Exited (0)` = success).
 
@@ -46,10 +52,12 @@ Optional: add LLM keys to `.env` so chat/embeddings work — `ANTHROPIC_API_KEY`
 ## Everyday use
 
 **Pausing / resuming for the day — prefer `stop`/`start`, not `down`/`up`:**
+
 ```bash
 docker compose -f deploy/docker-compose.yml stop      # pause — keeps containers
 docker compose -f deploy/docker-compose.yml start     # resume — warm, ready in seconds
 ```
+
 > ⚠️ `down` *removes* the containers, so the next `up` cold-starts everything. LiteLLM
 > re-registers its models on a cold start and takes ~2–3 min before it reports healthy
 > (Compose waits for it — that's normal, not a hang). `stop`/`start` avoids that wait
@@ -57,30 +65,35 @@ docker compose -f deploy/docker-compose.yml start     # resume — warm, ready i
 > editing `docker-compose*.yml` or `.env`).
 
 **Other commands:**
+
 ```bash
 docker compose -f deploy/docker-compose.yml --env-file .env up -d      # first start / after config changes
 docker compose -f deploy/docker-compose.yml ps                          # status — wait for "healthy"
 docker compose -f deploy/docker-compose.yml logs -f gateway workflows   # tail logs
 docker compose -f deploy/docker-compose.yml down                        # remove containers (keeps data volumes)
 ```
+
 - Add `--build` **only** when backend code / a Dockerfile changes (incremental: only the
   changed service rebuilds).
 - Rebuild a single service: `docker compose -f deploy/docker-compose.yml --env-file .env build <service>`.
 - **Never** `down -v` unless you intend to wipe the database (Postgres/MinIO volumes).
 
 ## Ports
-| Service | URL |
-|---|---|
-| **Gateway (public API)** | http://localhost:8000  (docs `/docs`) |
-| Keycloak (login/admin) | http://localhost:8081  (admin / admin) |
-| Temporal UI | http://localhost:8088 |
-| MinIO console | http://localhost:9001 |
-| Langfuse | http://localhost:3000 |
+
+| Service                        | URL                                    |
+| ------------------------------ | -------------------------------------- |
+| **Gateway (public API)** | http://localhost:8000  (docs`/docs`) |
+| Keycloak (login/admin)         | http://localhost:8081  (admin / admin) |
+| Temporal UI                    | http://localhost:8088                  |
+| MinIO console                  | http://localhost:9001                  |
+| Langfuse                       | http://localhost:3000                  |
 
 ## Demo logins (seeded, realm `industry-ai-os`, password `Passw0rd!`)
+
 `owner@demo.aios.local` · `admin@demo.aios.local` · `member@demo.aios.local` · `viewer@demo.aios.local`
 
 ## Frontend (`Landing-Page/`)
+
 ```bash
 cd Landing-Page
 cp .env.example .env      # VITE_API_URL=http://localhost:8000 (the gateway)
@@ -89,12 +102,14 @@ npm run dev               # http://localhost:8080
 ```
 
 ## Health check
+
 ```bash
 curl http://localhost:8000/healthz     # gateway
 curl http://localhost:8000/readyz      # gateway + dependencies
 ```
 
 ## Troubleshooting
+
 - **`port is already allocated`** — an old manual `uvicorn`/`keycloak` is on 8000/8001/8081.
   Stop it; compose runs its own.
 - **Page shows "Failed to load" / 500s** — a downstream service isn't healthy. Run
