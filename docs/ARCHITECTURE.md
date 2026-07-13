@@ -1,7 +1,9 @@
-# Architecture — Industry AI OS (Milestone 1)
+# Architecture — Industry AI OS
 
-> Status: living document. Finalized alongside the platform build.
-> This milestone delivers the reusable platform core only — **no industry code**.
+> Status: living document. Milestone 1 delivered the reusable platform core (§1–§6, no
+> industry code in the core). It now also carries the Workflow Pack Framework, per-industry
+> configuration, and the workspace-aware AI Assistant (§7–§8) — industries plug in as
+> configuration, never as forks.
 
 ## 1. Goal
 
@@ -67,7 +69,35 @@ Every external dependency sits behind an interface here so it can be swapped:
 
 See [DEPLOYMENT.md](DEPLOYMENT.md).
 
-## 7. Decisions
+## 7. Workflow packs & industry configuration
+
+An **industry is configuration**, realized in two layers on top of the M1 spine:
+
+- **Workflow Pack Framework** (M2, [ADR-0015](adr/0015-workflow-pack-framework.md)):
+  workflows are validated **JSON definitions** run by one generic engine, not per-workflow
+  code. Packs live in [`packs/<industry>/`](../packs) (manifest + `workflows/*.json` +
+  prompts) and seed into a per-tenant DB registry.
+- **Industry configuration** ([ADR-0016](adr/0016-industry-configuration.md)): each pack
+  manifest carries an optional `workspace` block (display name, theme, nav, entities,
+  terminology, copilots). A config-driven registry (`ai_os_shared.industry`) reads all
+  packs; the gateway exposes public `GET /industries` and identity exposes
+  `GET /api/identity/workspace/config`. **Adding an industry = adding a `pack.json`** — no
+  code change. Per-industry frontends share one backend; industry differs the interface +
+  catalogue, while data isolation stays at the tenant/RLS layer (§4).
+
+## 8. AI Assistant
+
+The chat endpoint is a **workspace-aware assistant** ([ADR-0017](adr/0017-ai-assistant.md)),
+not a generic chatbot. It resolves the active workspace (request `workspace` → else the
+user's `login_source`), detects intent, and pulls **real** data from existing APIs
+(knowledge `/retrieve`, workflow status/approvals). It owns conversation, intent, and
+context; **planning, workflow execution, connector calls, and approvals stay in the
+orchestrator/workflow/connector services** — the assistant requests and reports, never
+executes or fabricates. Behavior is set by one env var (`ASSISTANT_MODE`:
+`strict` | `strict_lenient` default | `lenient`). LLM failures surface as a clean error
+(a `502` or an SSE `{error}` frame), never a fake answer.
+
+## 9. Decisions
 
 Every major build-vs-buy decision has an ADR in [`docs/adr`](adr) scored on seven
 criteria: build-vs-buy, complexity, effort, scalability, lock-in risk, cost, and

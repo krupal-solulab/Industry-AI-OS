@@ -22,5 +22,7 @@ Scalability, Lock-in risk, Cost, and Community maturity. Default posture is
 | [0013](0013-observability-langfuse-otel.md) | Observability | Langfuse + OpenTelemetry |
 | [0014](0014-secrets-infisical.md) | Secrets | Infisical (or Vault) |
 | [0015](0015-workflow-pack-framework.md) | Workflow Pack Framework (M2) | Declarative workflow definitions over a generic engine |
+| [0016](0016-industry-configuration.md) | Multi-industry frontends | Industry = configuration (pack `workspace` block) over one backend, not forked code |
+| [0017](0017-ai-assistant.md) | AI Assistant | Workspace-aware conversational layer; intent detection + configurable mode; reuses services, no duplicated orchestration |
 
 See [_template.md](_template.md) for the format.
