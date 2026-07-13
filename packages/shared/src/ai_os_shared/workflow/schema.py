@@ -113,6 +113,29 @@ class PersonaRole(BaseModel):
     roles: list[str]  # platform roles (owner/admin/member/viewer) that hold this persona
 
 
+class NavItem(BaseModel):
+    """One entry in an industry workspace's navigation, rendered by the frontend."""
+
+    key: str
+    label: str
+    icon: str = ""
+
+
+class WorkspaceConfig(BaseModel):
+    """How a frontend should render an industry's workspace. Pure presentation +
+    catalogue config — the platform APIs are identical across industries; only this
+    changes. Adding/adjusting an industry's UI is a data edit here, never code.
+    """
+
+    display_name: str = ""
+    tagline: str = ""
+    theme: dict[str, str] = Field(default_factory=dict)  # e.g. {"primary": "#F59E0B"}
+    nav: list[NavItem] = Field(default_factory=list)
+    entities: list[str] = Field(default_factory=list)  # domain object types shown
+    terminology: dict[str, str] = Field(default_factory=dict)  # rename platform terms
+    copilots: list[str] = Field(default_factory=list)  # task assistants offered
+
+
 class PackManifest(BaseModel):
     key: str
     name: str
@@ -123,6 +146,9 @@ class PackManifest(BaseModel):
     persona_roles: list[PersonaRole] = Field(default_factory=list)
     connectors: list[str] = Field(default_factory=list)
     workflows: list[str] = Field(default_factory=list)  # workflow keys in the pack
+    # Optional: present on industry packs, absent on the generic demo pack. Drives the
+    # per-industry frontend via the industry registry (ai_os_shared.industry).
+    workspace: WorkspaceConfig | None = None
 
 
 def validate_definition(data: dict) -> WorkflowDefinition:

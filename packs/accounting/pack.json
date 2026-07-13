@@ -1,0 +1,58 @@
+{
+  "key": "accounting",
+  "name": "Accounting AI OS",
+  "industry": "accounting",
+  "version": "1.0.0",
+  "description": "Finance copilots for AP/AR, month-end close, reconciliation, and audit — invoice-to-approval automation on the shared platform.",
+  "personas": [
+    "ap_clerk",
+    "ar_specialist",
+    "controller",
+    "accountant",
+    "auditor"
+  ],
+  "persona_roles": [
+    { "persona": "controller", "roles": ["owner", "admin"] },
+    { "persona": "accountant", "roles": ["owner", "admin", "member"] },
+    { "persona": "ap_clerk", "roles": ["owner", "admin", "member"] }
+  ],
+  "connectors": [],
+  "workflows": [],
+  "workspace": {
+    "display_name": "Accounting AI OS",
+    "tagline": "Copilots for AP/AR, month-end close, reconciliation, and audit.",
+    "theme": { "primary": "#06B6D4" },
+    "nav": [
+      { "key": "dashboard", "label": "Dashboard", "icon": "layout-dashboard" },
+      { "key": "invoices", "label": "Invoices", "icon": "receipt" },
+      { "key": "purchase_orders", "label": "Purchase Orders", "icon": "file-text" },
+      { "key": "reconciliation", "label": "Reconciliation", "icon": "scale" },
+      { "key": "close", "label": "Month-End Close", "icon": "calendar-check" },
+      { "key": "reporting", "label": "Reporting", "icon": "bar-chart-3" },
+      { "key": "documents", "label": "Documents", "icon": "file-stack" },
+      { "key": "chat", "label": "Finance Copilot", "icon": "message-square" }
+    ],
+    "entities": [
+      "invoice",
+      "purchase_order",
+      "receipt",
+      "bank_transaction",
+      "ledger_entry",
+      "vendor",
+      "expense_claim",
+      "financial_statement"
+    ],
+    "terminology": { "workflow": "Copilot" },
+    "copilots": [
+      "invoice_processing",
+      "ar_collections",
+      "vendor_onboarding",
+      "bank_reconciliation",
+      "month_end_close",
+      "financial_reporting",
+      "expense_audit",
+      "audit_preparation",
+      "sales_tax_compliance"
+    ]
+  }
+}

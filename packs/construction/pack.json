@@ -35,5 +35,38 @@
     "daily_report",
     "invoice_verification",
     "progress_report"
-  ]
+  ],
+  "workspace": {
+    "display_name": "Construction AI OS",
+    "tagline": "Copilots that automate RFIs, change orders, and field operations.",
+    "theme": { "primary": "#F59E0B" },
+    "nav": [
+      { "key": "dashboard", "label": "Dashboard", "icon": "layout-dashboard" },
+      { "key": "rfis", "label": "RFIs", "icon": "file-question" },
+      { "key": "change_orders", "label": "Change Orders", "icon": "file-diff" },
+      { "key": "daily_reports", "label": "Daily Reports", "icon": "clipboard-list" },
+      { "key": "submittals", "label": "Submittals", "icon": "file-check" },
+      { "key": "documents", "label": "Drawings & Docs", "icon": "file-stack" },
+      { "key": "invoices", "label": "Subcontractor Invoices", "icon": "receipt" },
+      { "key": "chat", "label": "Site Copilot", "icon": "message-square" }
+    ],
+    "entities": [
+      "rfi",
+      "change_order",
+      "daily_report",
+      "submittal",
+      "drawing",
+      "specification",
+      "schedule",
+      "subcontractor_invoice"
+    ],
+    "terminology": { "document": "Drawing", "workflow": "Copilot" },
+    "copilots": [
+      "rfi",
+      "change_order",
+      "daily_report",
+      "invoice_verification",
+      "progress_report"
+    ]
+  }
 }

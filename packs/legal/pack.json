@@ -1,0 +1,30 @@
+{
+  "key": "legal",
+  "name": "Legal AI OS",
+  "industry": "legal",
+  "version": "0.1.0",
+  "description": "Starter legal pack — matter, contract, and clause workspace. Workflows/copilots to be authored once the legal FE is finalized.",
+  "personas": ["paralegal", "associate", "counsel"],
+  "persona_roles": [
+    { "persona": "counsel", "roles": ["owner", "admin"] },
+    { "persona": "associate", "roles": ["owner", "admin", "member"] }
+  ],
+  "connectors": [],
+  "workflows": [],
+  "workspace": {
+    "display_name": "Legal AI OS",
+    "tagline": "Copilots for matters, contracts, and clause review.",
+    "theme": { "primary": "#6366F1" },
+    "nav": [
+      { "key": "dashboard", "label": "Dashboard", "icon": "layout-dashboard" },
+      { "key": "matters", "label": "Matters", "icon": "briefcase" },
+      { "key": "contracts", "label": "Contracts", "icon": "file-signature" },
+      { "key": "clauses", "label": "Clause Library", "icon": "list" },
+      { "key": "documents", "label": "Documents", "icon": "file-stack" },
+      { "key": "chat", "label": "Legal Copilot", "icon": "message-square" }
+    ],
+    "entities": ["matter", "contract", "clause", "document"],
+    "terminology": { "workflow": "Copilot" },
+    "copilots": []
+  }
+}

@@ -97,8 +97,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # litellm starts in seconds but its /health takes ~2-3 min to warm up (model
+      # registration). Gating on service_healthy made a cold `up` abort the whole stack;
+      # service_started is enough — the orchestrator retries LLM calls at request time.
       litellm:
-        condition: service_healthy
+        condition: service_started
 
   # ---------------------------------------------------------------- Knowledge
   knowledge:

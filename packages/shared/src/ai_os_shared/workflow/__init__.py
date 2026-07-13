@@ -18,6 +18,7 @@ from ai_os_shared.workflow.registry import PackError, load_all_packs, load_pack
 from ai_os_shared.workflow.schema import (
     ApprovalGate,
     IOField,
+    NavItem,
     PackManifest,
     Personas,
     Step,
@@ -25,12 +26,15 @@ from ai_os_shared.workflow.schema import (
     Trigger,
     TriggerType,
     WorkflowDefinition,
+    WorkspaceConfig,
     validate_definition,
 )
 
 __all__ = [
     "WorkflowDefinition",
     "PackManifest",
+    "NavItem",
+    "WorkspaceConfig",
     "Step",
     "StepType",
     "Trigger",

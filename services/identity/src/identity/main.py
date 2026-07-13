@@ -12,6 +12,7 @@ from ai_os_shared.authz import check_ctx
 from ai_os_shared.db import admin_session, new_uuid, tenant_session
 from ai_os_shared.errors import NotFoundError, ValidationError
 from ai_os_shared.health import HealthRegistry
+from ai_os_shared.industry import get_industry, industry_keys, list_industries
 from ai_os_shared.settings import get_settings
 from ai_os_shared.tenant_context import TenantContext, require_context
 from ai_os_shared.types import Resource, Role
@@ -84,8 +85,43 @@ async def me() -> dict:
     }
 
 
+@app.get("/industries", tags=["identity"])
+async def industries() -> list[dict]:
+    """The configured industries (one per non-generic pack). Drives signup dropdowns.
+    Also served publicly by the gateway pre-login; here it's the authed equivalent."""
+    return [i.summary() for i in list_industries()]
+
+
+@app.get("/workspace/config", tags=["identity"])
+async def workspace_config() -> dict:
+    """The workspace configuration for the CURRENT user's industry — nav, theme,
+    terminology, entities, available copilots/packs. The industry-specific frontend
+    calls this right after login to render the correct workspace against the shared API.
+
+    Falls back to a bare config (no industry) for users with no `login_source` (e.g. the
+    original demo users that predate self-service signup)."""
+    ctx = require_context()
+    async with tenant_session(ctx) as s:
+        row = (
+            await s.execute(
+                text(
+                    "SELECT login_source FROM user_profiles "
+                    "WHERE keycloak_user_id = :uid OR email = :email"
+                ),
+                {"uid": ctx.user_id, "email": ctx.email or ""},
+            )
+        ).mappings().first()
+    login_source = row["login_source"] if row else None
+    industry = get_industry(login_source)
+    return {
+        "login_source": login_source,
+        "industry": industry.key if industry else None,
+        "workspace": industry.workspace.model_dump() if industry else None,
+        "workflow_packs": industry.workflow_packs if industry else [],
+    }
+
+
 DEFAULT_SIGNUP_ROLE = Role.MEMBER
-LOGIN_SOURCES = {"accounting", "legal", "litigation", "construction"}
 SIGNUP_TENANT_SLUG = "demo"  # self-service signup joins the shared demo tenant
 
 
@@ -108,8 +144,9 @@ async def register(body: RegisterUser) -> UserOut:
     the shared demo tenant — never owner/admin — to avoid a public signup form handing
     out elevated privileges on a shared tenant.
     """
-    if body.login_source not in LOGIN_SOURCES:
-        raise ValidationError(f"login_source must be one of {sorted(LOGIN_SOURCES)}")
+    valid_sources = industry_keys()
+    if body.login_source not in valid_sources:
+        raise ValidationError(f"login_source must be one of {sorted(valid_sources)}")
 
     async with admin_session() as s:
         row = (

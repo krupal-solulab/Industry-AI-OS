@@ -16,6 +16,7 @@ from ai_os_shared.app import create_app
 from ai_os_shared.auth import REQUEST_ID_HEADER, context_from_jwt
 from ai_os_shared.errors import PlatformError
 from ai_os_shared.health import HealthRegistry
+from ai_os_shared.industry import list_industries
 from ai_os_shared.settings import get_settings
 from ai_os_shared.tenant_context import current_context, reset_context, set_context
 from gateway.graphql_schema import schema
@@ -35,6 +36,7 @@ app = create_app(
 
 _PUBLIC_PATHS = (
     "/healthz", "/readyz", "/docs", "/openapi.json", "/redoc", "/auth/token", "/auth/register",
+    "/industries",
 )
 
 
@@ -170,6 +172,16 @@ async def register(body: RegisterRequest):
     if resp.status_code >= 400:
         return JSONResponse(status_code=resp.status_code, content=resp.json())
     return await dev_token(TokenRequest(username=body.email, password=body.password))
+
+
+# ---- public: industries catalogue (for signup dropdowns, pre-login) ----------
+@app.get("/industries", tags=["public"])
+async def industries() -> list[dict]:
+    """The configured industries — served publicly (no auth) so each landing page can
+    populate its signup 'industry' selector before any token exists. Read straight from
+    the config-driven registry; adding an industry (a new pack.json) shows up here with
+    no code change."""
+    return [i.summary() for i in list_industries()]
 
 
 # ---- REST reverse proxy: /api/{service}/{path} ------------------------------

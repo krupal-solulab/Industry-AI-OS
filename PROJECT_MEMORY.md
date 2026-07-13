@@ -64,6 +64,7 @@ Web App (separate track) → Gateway (REST+GraphQL) → services → infra
 | D8 | Connector Hub is the ONLY layer touching third-party APIs | `Connector` ABC: `invoke(tool, args, config)`. |
 | D9 | App DB (tenants/documents/chat/workflows/audit/user_profiles) moved to **Neon** (shared team dev Postgres); Keycloak/Temporal/Langfuse stay on the local container | User-chosen, 2026-07-10. App runtime connects as restricted `aios_app` role (`NOSUPERUSER NOBYPASSRLS`); migrations/seed connect as `neondb_owner`. |
 | D10 | Self-service signup: **Keycloak stays the credential store/token issuer** (ADR-0001 unchanged); a new `user_profiles` table in the app DB carries platform-only fields (`role`, `login_source`) keyed by email | User-chosen, 2026-07-10. Public signups always land as `member` of the shared `demo` tenant — never owner/admin (privilege-escalation guard). |
+| D11 | **Multiple industry frontends, one backend. Industry = config, driven by `packs/<industry>/pack.json` (`workspace` block), NOT code.** N landing pages (per industry) hit the same gateway; each calls `/workspace/config` to render its nav/theme/terminology. Data isolation stays at the tenant/RLS layer (Plan A) — industry differs the *interface + catalogue*, not data isolation | User-chosen, 2026-07-10. Adding an industry = adding a `pack.json`; no code change. Plan B (hard per-industry data isolation via separate tenants) deferred until real multi-industry customers onboard. |
 
 ## 4. Constraints / gotchas
 
@@ -380,5 +381,50 @@ Web App (separate track) → Gateway (REST+GraphQL) → services → infra
   frontend: `src/api/client.ts`, `src/routes/index.tsx`.
 - **Next:** backfill profile rows for the 4 demo users; fix the unrelated
   `services/admin` bug if desired; user to confirm real-browser signup/login UX.
+
+### 2026-07-10 — Multi-industry frontends: config-driven industry registry (D11, Plan A)
+- **What:** Backend support for N industry-specific landing pages against one backend.
+  Industry is now **configuration** (`packs/<industry>/pack.json`), surfaced to any FE.
+  - `packages/shared/.../workflow/schema.py`: `PackManifest` gained an optional
+    `workspace` block (`WorkspaceConfig` + `NavItem`: display_name, tagline, theme, nav,
+    entities, terminology, copilots). Optional → the generic demo pack still validates.
+  - `packages/shared/.../industry.py` (NEW): config-driven registry. Scans
+    `packs/*/pack.json`, skips `industry == "generic"`, exposes `list_industries()`,
+    `get_industry(key)`, `industry_keys()`, `reload()`. Packs-dir resolution:
+    `$AIOS_PACKS_DIR` → walk-up for `packs/` → `/app/packs` → `./packs` (works in
+    container AND source/test, since `ai_os_shared` installs to site-packages and can't
+    walk to `packs/` at runtime).
+  - Pack manifests: added `workspace` to `packs/construction/pack.json` (matches its FE:
+    RFIs/change-orders/daily-reports/submittals/drawings/invoices) and authored NEW
+    `packs/accounting/pack.json` (invoices/POs/reconciliation/close/reporting — matches
+    accounting-cyan FE), plus starter `packs/legal/` + `packs/litigation/` (workspace only,
+    no workflows yet).
+  - `services/identity/main.py`: `GET /industries` (authed list) + `GET /workspace/config`
+    (current user's industry workspace, resolved from their `login_source`; bare config
+    for profile-less legacy users). Signup now validates `login_source` against
+    `industry_keys()` — the hardcoded `LOGIN_SOURCES` set is GONE (that was the
+    "add an industry = edit code" bottleneck).
+  - `services/gateway/main.py`: public `GET /industries` (served straight from the
+    registry, no downstream call) + added to `_PUBLIC_PATHS` so signup dropdowns work
+    pre-login. `/workspace/config` reached via the normal authed proxy
+    (`/api/identity/workspace/config`).
+  - `deploy/Dockerfile.service`: `COPY packs /app/packs` + `ENV AIOS_PACKS_DIR=/app/packs`
+    (cached once before the per-SERVICE divergence) so every image can read the registry.
+- **FE contract (for the FE dev):** pre-login `GET /industries` → `[{key,name,tagline,theme}]`
+  for the signup selector; post-login `GET /api/identity/workspace/config` →
+  `{login_source, industry, workspace:{display_name,theme,nav[],entities[],terminology,
+  copilots[]}, workflow_packs[]}`. Same backend for all 3+ FEs; only this config differs.
+- **Reference FEs seen:** construction-ai-os.vercel.app, accounting-cyan.vercel.app
+  (used to shape the two workspace configs). buildflow-ai-nine = UI style ref.
+- **Verified:** industry registry + `load_all_packs` resolve all 5 packs (4 industries +
+  generic demo excluded); full shared suite **23 tests pass** (incl. new
+  `tests/test_industry.py`, 7 cases); ruff clean on all changed files; py_compile clean.
+  **NOT yet run live:** endpoints not exercised against the running stack (needs a
+  `--build` of gateway + identity to pick up the new code + packs in-image).
+- **Decision:** D11 (industry = config; Plan A — interface differs, data stays
+  tenant-scoped). Plan B (per-industry data isolation) explicitly deferred.
+- **Next:** rebuild gateway + identity (`docker compose ... up -d --build gateway identity`)
+  and smoke-test `/industries` + `/workspace/config`; author accounting/legal/litigation
+  workflows when those FEs are finalized; FE dev wires the 3 landing pages to the contract.
 
 <!-- New agents: append your entry above this line. -->

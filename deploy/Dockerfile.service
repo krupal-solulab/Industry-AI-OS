@@ -20,6 +20,13 @@ WORKDIR /app
 # Shared spine — identical for every service, so this layer caches once.
 COPY packages/shared /app/packages/shared
 
+# Industry/workflow packs (config-driven). Read at runtime by the industry registry
+# (ai_os_shared.industry) for every service's /industries + /workspace/config, and by
+# the workflows pack seeder. Small JSON/markdown; identical per service so it caches
+# once. AIOS_PACKS_DIR makes resolution explicit (site-packages install can't walk to it).
+COPY packs /app/packs
+ENV AIOS_PACKS_DIR=/app/packs
+
 # Per-service code (this is where the build diverges per SERVICE).
 ARG SERVICE
 COPY services/${SERVICE} /app/service

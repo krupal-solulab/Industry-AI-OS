@@ -1,0 +1,31 @@
+{
+  "key": "litigation",
+  "name": "Litigation AI OS",
+  "industry": "litigation",
+  "version": "0.1.0",
+  "description": "Starter litigation pack — case, filing, and discovery workspace. Workflows/copilots to be authored once the litigation FE is finalized.",
+  "personas": ["paralegal", "litigator", "counsel"],
+  "persona_roles": [
+    { "persona": "counsel", "roles": ["owner", "admin"] },
+    { "persona": "litigator", "roles": ["owner", "admin", "member"] }
+  ],
+  "connectors": [],
+  "workflows": [],
+  "workspace": {
+    "display_name": "Litigation AI OS",
+    "tagline": "Copilots for cases, filings, discovery, and deadlines.",
+    "theme": { "primary": "#7C3AED" },
+    "nav": [
+      { "key": "dashboard", "label": "Dashboard", "icon": "layout-dashboard" },
+      { "key": "cases", "label": "Cases", "icon": "gavel" },
+      { "key": "filings", "label": "Filings", "icon": "file-text" },
+      { "key": "discovery", "label": "Discovery", "icon": "search" },
+      { "key": "deadlines", "label": "Deadlines", "icon": "calendar-clock" },
+      { "key": "documents", "label": "Documents", "icon": "file-stack" },
+      { "key": "chat", "label": "Litigation Copilot", "icon": "message-square" }
+    ],
+    "entities": ["case", "filing", "discovery_request", "deadline", "document"],
+    "terminology": { "workflow": "Copilot" },
+    "copilots": []
+  }
+}
