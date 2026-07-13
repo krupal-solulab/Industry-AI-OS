@@ -119,6 +119,17 @@ curl http://localhost:8000/readyz      # gateway + dependencies
   re-run `up -d --build`; if it persists, restart Docker Desktop.
 - **Chat/knowledge say "not configured"** — set `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` in
   `.env` and `up -d` again.
+- **Signup fails "Organization not found" / login says "JWT carries no organization/tenant
+  claim"** — the `seed` job never provisioned the demo Keycloak org. Usually because the
+  **`seed` image is stale after a new migration was added** (it fails with
+  `Can't locate revision '<id>'`). Rebuild + rerun it:
+  `docker compose -f deploy/docker-compose.yml --env-file .env build seed` then
+  `... run --rm seed`. **Rule: rebuild `seed` (or `up -d --build`) whenever you add a
+  migration under `deploy/migrations/versions/`.**
+- **`up` seems to hang / aborts on `deploy-litellm-1 is unhealthy`** — litellm's `/health`
+  warms up ~2-3 min on a cold boot; that's expected. It no longer aborts the stack, but if
+  you see it, litellm is fine — just re-run `up -d`. Prefer `stop`/`start` over `down`/`up`
+  for day-to-day (see "Everyday use").
 
 > Design docs: `docs/ARCHITECTURE.md`, `docs/adr/`, `docs/MILESTONE_2.md`.
 > Operational state / history: `PROJECT_MEMORY.md`.

@@ -124,12 +124,22 @@ Web App (separate track) → Gateway (REST+GraphQL) → services → infra
 | Login → JWT → `/api/identity/me` (live, real Keycloak) | ✅ pass (2026-07-10) |
 | Neon RLS isolation (tenant A/B/no-tenant reads) | ✅ pass (2026-07-10) |
 | Self-service signup → auto-login → `/me` returns role+login_source | ✅ pass (2026-07-10) |
+| Industry endpoints live: `/industries` + `/api/identity/workspace/config` (construction) | ✅ pass (2026-07-13) |
+| Signup with `login_source` → industry workspace config, end-to-end | ✅ pass (2026-07-13) |
+| Shared unit suite incl. `test_industry.py` (23 tests) | ✅ pass (2026-07-13) |
 | Helm `helm template` render | ❌ NOT RUN (helm not installed) |
 
 ## 7. Pending tasks / next steps
 
 **Immediate (finish Milestone 1 acceptance):**
 - [x] Boot the stack — done 2026-07-10 (see Change Log).
+- [x] Industry feature live-verified + first per-industry FE (Accounting) wired —
+      done 2026-07-13 (see Change Log).
+- [ ] **Author pack workflows (copilots) for accounting/legal/litigation** so those FEs
+      have real workflow content (construction already has 5). Their `pack.json` currently
+      has `workflows: []`.
+- [ ] Wire the **Construction + Legal FEs** to the backend the same way as Accounting
+      (separate repos; see `../Accounting/FRONTEND.md` for the template) once provided.
 - [ ] Run `make smoke` against the live stack; confirm the DoD flow (login → chat →
       upload → RAG → approval workflow → audit) passes.
 - [ ] Set `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` in `.env` to exercise chat/embeddings/RAG.
@@ -426,5 +436,111 @@ Web App (separate track) → Gateway (REST+GraphQL) → services → infra
 - **Next:** rebuild gateway + identity (`docker compose ... up -d --build gateway identity`)
   and smoke-test `/industries` + `/workspace/config`; author accounting/legal/litigation
   workflows when those FEs are finalized; FE dev wires the 3 landing pages to the contract.
+
+### 2026-07-13 — Industry feature verified live + first per-industry FE (Accounting) wired
+- **What:** Took the D11 industry work from "authored" to "running live", and wired the
+  first dedicated per-industry frontend against it.
+- **Backend — live-verified (no code change beyond the healthcheck/seed fixes below):**
+  - Rebuilt gateway + identity; `GET /industries` returns all 4 industries
+    (accounting/construction/legal/litigation) with name+theme; `GET /api/identity/
+    workspace/config` returns the caller's industry workspace (construction verified:
+    amber theme, RFIs nav, `document→Drawing` terminology, 5 copilots). Legacy demo users
+    (no `login_source`) correctly get a null/bare config.
+  - Signup→industry flow verified end-to-end: `POST /auth/register` with
+    `login_source=construction` → Keycloak user in demo org → auto-login → workspace config.
+  - **Ops fixes made while getting there (compose/seed only):**
+    (1) `deploy/docker-compose.infra.yml`: rewrote litellm/langfuse/nats healthchecks that
+    used the bash-only `/dev/tcp` trick (images are dash/busybox/scratch) — litellm/app →
+    `python urllib`, langfuse → `wget $(hostname -i)`, nats healthcheck removed; litellm
+    `start_period`→150s. (2) `deploy/docker-compose.yml`: orchestrator's dependency on
+    litellm changed `service_healthy`→`service_started` (litellm's /health warms up ~2-3
+    min on cold boot and was aborting the whole `up`). (3) Cerbos: `common_roles` derived
+    roles moved out of the reserved `_schemas/` dir. (4) `knowledge` image slimmed (dropped
+    docling/torch, ~8GB→~1GB) after a disk-full build failure. (5) **Seed image must be
+    rebuilt after any new migration** — a stale seed image (pre-`0003`) failed with
+    "Can't locate revision '0003'" and never provisioned the demo Keycloak org, which
+    surfaced downstream as signup "Organization not found" + login "JWT carries no
+    organization/tenant claim". Rebuild+run of seed fixed it. See RUNNING.md.
+- **Frontend — first industry FE wired (separate repo `../Accounting/`, NOT in this repo):**
+  - The `Accounting/` FE (TanStack Start, same scaffold as the deleted demo `Landing-Page/`)
+    was on a `DUMMY_AUTH`/localStorage mock. Flipped to the real gateway: signup →
+    `/auth/register` with `login_source:"accounting"`; pages wired to real endpoints
+    (dashboard→health/documents/audit, workflows, approvals→decide, connectors, documents,
+    admin, assistant, settings). Analytics/knowledge/doc-intelligence/close-checklist left
+    as dummy (no backend source yet). Documented in `../Accounting/FRONTEND.md` (the
+    template for the Construction + Legal FEs to come).
+  - `Landing-Page/` (the generic demo FE) was deleted by the user — superseded by the
+    per-industry FEs. Not referenced by the backend.
+- **Verified:** live curl of `/industries` + `/workspace/config` + full signup flow;
+  FE typechecked-by-review only (its `node_modules` not installed here).
+- **Next:** author accounting/legal/litigation pack workflows (copilots) so those FEs have
+  real workflow content; wire the Construction + Legal FEs the same way when provided;
+  backfill `user_profiles` for the 4 legacy demo users (still §7).
+
+### 2026-07-13 — Workspace-aware AI Assistant (intent detection + Mode 2) in the orchestrator
+- **What:** Turned the generic orchestrator `/chat` into the per-industry-workspace AI
+  Assistant per spec. Conversation/intent/context live in the assistant; planning,
+  execution, connectors, approvals stay in the workflow/orchestrator services (only
+  *called*, never reimplemented). No fabrication of data/results anywhere.
+  - `packages/shared/.../settings.py`: new `ASSISTANT_MODE` (alias `ASSISTANT_MODE`,
+    default `strict_lenient`) — `strict` | `strict_lenient` (Mode 2, default) | `lenient`.
+    Behavior changes via this var ONLY; no logic edits needed to switch modes.
+  - `services/orchestrator/.../assistant.py` (NEW): `Mode`/`Intent` enums;
+    `resolve_workspace()` (explicit `workspace` arg → else user's `login_source`, via the
+    D11 `ai_os_shared.industry` registry); `classify_intent()` (LLM→JSON, 8 intents,
+    fails safe to general_question); `build_system_prompt()` (workspace name +
+    capabilities + terminology + response-format guidance + the mode's unrelated-question
+    policy); `workspace_reminder()` + `last_assistant_had_reminder()` (Mode-2 reminder,
+    never twice in a row).
+  - `services/orchestrator/.../main.py`: `/chat` now resolves workspace → detects intent →
+    `_gather_backend_data()` pulls REAL data for that intent from existing APIs
+    (knowledge `/retrieve`; workflows `/workflows` for status/approvals, forwarding the
+    signed context header) → answers with the workspace-aware system prompt → appends the
+    Mode-2 reminder only for workspace-UNRELATED intents (general_question/conversation).
+    Response adds `intent` + `workspace`; audit metadata records them. `/chat/stream` made
+    workspace-aware (same system prompt + reminder tail). ChatRequest gained `workspace`.
+    **Honesty guardrail:** workflow-execution/document-analysis intents get a data block
+    that lists the workspace's configured workflows + the tenant's real runs and instructs
+    the model to identify + collect inputs, and to state plainly that only
+    `document_review_approval` runs end-to-end today (the pack-workflow Temporal executor
+    is still pending) — never invent a run id or a result.
+  - `.env.example`: documented `ASSISTANT_MODE`.
+- **Verified:** ruff clean + py_compile clean on all changed files; pure logic smoke-tested
+  offline (workspace resolves from packs; reminder text matches spec; mode parse defaults
+  to Mode 2; reminder-dedup works; system prompt carries workspace + no-fabricate + format).
+  **NOT yet run live:** intent classification + real answers need the orchestrator rebuilt
+  and an LLM key set (`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`).
+- **Known limitation:** conversation context beyond history (current project/uploaded doc/
+  current workflow) is not yet persisted — workspace comes per-request and "current
+  workflow" is read live from the workflows list. Add a session-context store when needed.
+- **Next:** rebuild orchestrator (`up -d --build orchestrator`), set an LLM key, and
+  exercise the intents live; wire pack-workflow execution (Temporal PackWorkflow) so
+  workflow-execution intents can actually start non-review workflows.
+
+### 2026-07-13 — Assistant failure handling (backend SSE error frames + FE surfacing)
+- **Why:** With no valid LLM key, litellm returned 401 and the chat stream produced zero
+  tokens; the Accounting FE silently fell back to a canned `dummyReply()`, so a real
+  backend failure looked like a bland answer. Fixed both ends.
+- **Backend (`services/orchestrator/main.py`):**
+  - `/chat`: wrapped the LLM call in try/except → logs the real error, persists the user
+    turn, and raises `UpstreamError(LLM_UNAVAILABLE)` (clean 502 with a friendly message;
+    never leaks the raw provider/proxy error).
+  - `/chat/stream`: the generator now catches LLM errors and emits an SSE
+    `data: {"error": "<friendly>"}` frame + `[DONE]` (instead of a broken/empty stream);
+    switched all SSE framing to `json.dumps` (robust escaping); persists only the user turn
+    on error (no empty assistant message). Added a `structlog` logger + `LLM_UNAVAILABLE`.
+- **Frontend (`Accounting/`):**
+  - `api/client.ts`: `chatStream` yield type now includes `error?: string`.
+  - `routes/app.assistant.tsx`: `send()` surfaces failures — reads the `error` frame,
+    treats an empty stream as an error, and catches thrown `ApiError`; shows a distinct
+    destructive-styled ⚠️ bubble (`Msg.error`). The canned `dummyReply` is now gated behind
+    an explicit `OFFLINE_DEMO=false` toggle (kept for no-backend UI demos), never a silent
+    error mask.
+- **Verified:** orchestrator ruff + py_compile clean; Accounting `tsc --noEmit` exit 0.
+  **NOT yet run live** (needs orchestrator rebuild). Root cause of the 401 remains an env
+  issue: `ANTHROPIC_API_KEY` empty + OpenAI key over quota — set a valid provider key and
+  `up -d` (see that troubleshooting note).
+- **Next:** rebuild orchestrator (`up -d --build orchestrator`) to activate; once a valid
+  LLM key is set, verify a real answer + the Mode-2 reminder.
 
 <!-- New agents: append your entry above this line. -->

@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     log_level: str = Field("info", alias="LOG_LEVEL")
     service_name: str = Field("aios-service", alias="SERVICE_NAME")
 
+    # -- AI Assistant workspace-awareness mode -------------------------------
+    # strict:          reject questions unrelated to the active workspace.
+    # strict_lenient:  (default) answer anything, but append a workspace reminder.
+    # lenient:         behave like a normal assistant, no reminder.
+    # Change behavior by setting ASSISTANT_MODE only — never by editing logic.
+    assistant_mode: str = Field("strict_lenient", alias="ASSISTANT_MODE")
+
     # -- postgres ------------------------------------------------------------
     database_url: str = Field(
         "postgresql+asyncpg://aios:aios@localhost:5432/aios", alias="DATABASE_URL"
