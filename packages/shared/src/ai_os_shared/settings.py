@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     redis_url: str = Field("redis://localhost:6379/0", alias="REDIS_URL")
     nats_url: str = Field("nats://localhost:4222", alias="NATS_URL")
 
+    # -- Nango (connector auth broker: OAuth + token refresh + REST proxy) ---
+    # Empty secret => connectors run in SANDBOX (provider-shaped fixtures). Set the
+    # secret + a per-tenant connection id to hit live provider APIs via Nango's proxy.
+    nango_secret_key: str = Field("", alias="NANGO_SECRET_KEY")
+    nango_host: str = Field("https://api.nango.dev", alias="NANGO_HOST")
+
     # -- temporal ------------------------------------------------------------
     temporal_host: str = Field("localhost:7233", alias="TEMPORAL_HOST")
     temporal_namespace: str = Field("default", alias="TEMPORAL_NAMESPACE")

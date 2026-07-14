@@ -11,11 +11,17 @@ from connectors.base import (
     Connector,
     EchoConnector,
     MicrosoftGraphConnector,
+    nango_connectors,
 )
 
 _REGISTRY: dict[str, Connector] = {
     c.key: c
-    for c in (EchoConnector(), MicrosoftGraphConnector(), ComposioConnector())
+    for c in (
+        EchoConnector(),
+        MicrosoftGraphConnector(),
+        ComposioConnector(),
+        *nango_connectors(),
+    )
 }
 
 

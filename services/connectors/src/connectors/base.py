@@ -8,7 +8,10 @@ args)`. Callers never learn which backend a connector uses.
 from __future__ import annotations
 
 import abc
+from collections.abc import Callable
 from dataclasses import dataclass, field
+
+import httpx
 
 from ai_os_shared.settings import get_settings
 
@@ -138,3 +141,116 @@ class ComposioConnector(Connector):
                 "message": "Set a Composio API key on this connector to enable it.",
             }
         raise NotImplementedError("Composio brokering is enabled once configured.")
+
+
+# --------------------------------------------------------------------------- Nango
+# Nango is NOT a business API — it provides OAuth + token refresh + an authenticated
+# PROXY to each provider's OWN REST API. So a Nango connector is a THIN pass-through:
+#   invoke(<HTTP method>, {"endpoint": "/vendor", "query": {...}, "body": {...}}, config)
+# performs `<method> <provider>/<endpoint>` via Nango, which injects auth. The AI OS
+# supplies all the business logic (validation, dedup, approval) *around* these calls.
+#
+# Sandbox mode (no NANGO_SECRET_KEY / connection id) returns provider-shaped fixtures
+# flagged `_sandbox: true`, so a workflow runs end to end with NO accounts. Going live
+# is a credentials change — the same connector, the same workflow definition, no code.
+
+SandboxFn = Callable[[str, str, dict], dict]
+
+
+class NangoConnector(Connector):
+    kind = "nango"
+
+    def __init__(self, provider: str, name: str, sandbox: SandboxFn | None = None) -> None:
+        self.provider = provider
+        self.key = f"nango.{provider}"
+        self.name = name
+        self._sandbox = sandbox
+
+    @property
+    def tools(self) -> list[Tool]:
+        # The "tool" is the HTTP method; the endpoint/params live in the arguments.
+        common = {
+            "type": "object",
+            "properties": {
+                "endpoint": {"type": "string"},
+                "query": {"type": "object"},
+                "body": {"type": "object"},
+            },
+            "required": ["endpoint"],
+        }
+        return [
+            Tool(name=m, description=f"{m} <endpoint> on {self.name} via Nango proxy.",
+                 input_schema=common)
+            for m in ("GET", "POST", "PUT", "PATCH", "DELETE")
+        ]
+
+    async def invoke(self, tool: str, arguments: dict, config: dict) -> dict:
+        settings = get_settings()
+        method = (tool or "GET").upper()
+        endpoint = str(arguments.get("endpoint", ""))
+        query = arguments.get("query") or None
+        body = arguments.get("body") or None
+
+        secret = config.get("nango_secret_key") or settings.nango_secret_key
+        connection_id = config.get("connection_id")
+
+        # ---- Sandbox (no live credentials): provider-shaped, clearly labeled -------
+        if not secret or not connection_id:
+            fixture = self._sandbox(method, endpoint, arguments) if self._sandbox else {}
+            return {
+                "status": "sandbox",
+                "_sandbox": True,
+                "provider": self.provider,
+                "request": {"method": method, "endpoint": endpoint},
+                **fixture,
+            }
+
+        # ---- Live: authenticated proxy to the provider's own REST API via Nango ----
+        url = f"{settings.nango_host.rstrip('/')}/proxy{endpoint}"
+        headers = {
+            "Authorization": f"Bearer {secret}",
+            "Provider-Config-Key": self.provider,
+            "Connection-Id": connection_id,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.request(
+                    method, url, headers=headers, params=query, json=body
+                )
+                resp.raise_for_status()
+                data = resp.json() if resp.content else {}
+        except httpx.HTTPError as exc:
+            return {"status": "error", "provider": self.provider, "error": str(exc)}
+        return {"status": "ok", "provider": self.provider, "data": data}
+
+
+def _gmail_sandbox(method: str, endpoint: str, args: dict) -> dict:
+    """Gmail-shaped demo fixtures (List/Get Message, Send)."""
+    if method == "POST" and "send" in endpoint:
+        return {"id": "sandbox-sent-1", "labelIds": ["SENT"]}
+    if endpoint.startswith("/messages"):
+        return {
+            "id": endpoint.rsplit("/", 1)[-1] or "sandbox-msg-1",
+            "from": "billing@acme-supplies.example",
+            "subject": "Invoice INV-1042",
+            "attachments": [{"filename": "invoice-INV-1042.pdf", "attachment_id": "att_1"}],
+        }
+    return {}
+
+
+def _quickbooks_sandbox(method: str, endpoint: str, args: dict) -> dict:
+    """QuickBooks-shaped demo fixtures (Vendors, Bills)."""
+    if endpoint.startswith("/vendor"):
+        return {"id": "V-1001", "vendors": [{"Id": "V-1001", "DisplayName": "Acme Supplies"}]}
+    if endpoint.startswith("/bill") and method == "GET":
+        return {"bills": []}  # none found => not a duplicate
+    if endpoint.startswith("/bill") and method == "POST":
+        return {"id": "BILL-5001", "status": "created"}
+    return {}
+
+
+def nango_connectors() -> list[NangoConnector]:
+    return [
+        NangoConnector("gmail", "Gmail (via Nango)", _gmail_sandbox),
+        NangoConnector("quickbooks", "QuickBooks Online (via Nango)", _quickbooks_sandbox),
+    ]

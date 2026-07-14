@@ -1,0 +1,136 @@
+{
+  "$schema": "aios.workflow/v1",
+  "key": "invoice_verification",
+  "pack": "accounting",
+  "version": "1.0.0",
+  "business_goal": "Process an inbound vendor invoice end to end: read it from email, extract it, validate it against the accounting system (vendor match, duplicate check, tax), summarize for a human, and — only after approval — create the bill and notify the vendor.",
+  "personas": { "primary": "ap_clerk", "supporting": ["accountant", "controller"] },
+  "trigger": { "type": "email", "source": "nango.gmail" },
+  "inputs": [
+    { "key": "invoice_email", "type": "email", "required": true, "description": "Inbound vendor invoice email (with PDF attachment)" }
+  ],
+  "connectors_required": ["nango.gmail", "nango.quickbooks"],
+  "steps": [
+    {
+      "id": "read_email",
+      "type": "connector.call",
+      "name": "Read the invoice email + download the PDF attachment",
+      "config": {
+        "connector": "nango.gmail",
+        "tool": "GET",
+        "arguments": { "endpoint": "/messages/{{ inputs.invoice_email.id }}" },
+        "note": "Nango injects OAuth; returns message + attachments (Gmail Get Message)."
+      }
+    },
+    {
+      "id": "extract_invoice",
+      "type": "document.parse",
+      "name": "Document AI — OCR + extraction",
+      "config": {
+        "files": "{{ steps.read_email.out.attachments }}",
+        "note": "Digital PDFs parse via Docling; scanned images need the OCR add-on (MILESTONE_3)."
+      }
+    },
+    {
+      "id": "search_vendor",
+      "type": "connector.call",
+      "name": "Look up the vendor (QuickBooks/Xero)",
+      "config": {
+        "connector": "nango.quickbooks",
+        "tool": "GET",
+        "arguments": { "endpoint": "/vendor", "query": { "name": "{{ steps.extract_invoice.out.vendor_name }}" } },
+        "note": "Nango proxy -> provider List/Search Vendors."
+      }
+    },
+    {
+      "id": "search_existing_invoice",
+      "type": "connector.call",
+      "name": "Search existing bills (duplicate-check data)",
+      "config": {
+        "connector": "nango.quickbooks",
+        "tool": "GET",
+        "arguments": {
+          "endpoint": "/bill",
+          "query": { "vendor": "{{ steps.extract_invoice.out.vendor_name }}", "doc_number": "{{ steps.extract_invoice.out.invoice_number }}" }
+        },
+        "note": "No checkDuplicate() API — fetch candidate bills; the AI decides."
+      }
+    },
+    {
+      "id": "validate",
+      "type": "ai.action",
+      "name": "Accounting AI Validation Engine",
+      "config": {
+        "prompt": "invoice_validate",
+        "output": "json",
+        "context": {
+          "invoice": "{{ steps.extract_invoice.out }}",
+          "vendor_matches": "{{ steps.search_vendor.out }}",
+          "existing_bills": "{{ steps.search_existing_invoice.out }}"
+        },
+        "note": "Business logic (ours): vendor match, duplicate detection, tax validation, field checks."
+      }
+    },
+    {
+      "id": "summary",
+      "type": "ai.action",
+      "name": "Generate AI summary + approve/reject recommendation",
+      "config": {
+        "prompt": "invoice_summary",
+        "output": "json",
+        "context": {
+          "invoice": "{{ steps.extract_invoice.out }}",
+          "validation": "{{ steps.validate.out }}"
+        }
+      }
+    },
+    {
+      "id": "approval",
+      "type": "approval",
+      "name": "Human approval",
+      "config": { "summary": "{{ steps.summary.out.text }}", "approver_persona": "controller" }
+    },
+    {
+      "id": "create_bill",
+      "type": "connector.call",
+      "name": "Create the bill after approval (QuickBooks/Xero)",
+      "config": {
+        "connector": "nango.quickbooks",
+        "tool": "POST",
+        "arguments": {
+          "endpoint": "/bill",
+          "body": {
+            "vendor_ref": "{{ steps.search_vendor.out.id }}",
+            "doc_number": "{{ steps.extract_invoice.out.invoice_number }}",
+            "total_amount": "{{ steps.extract_invoice.out.total }}",
+            "line_items": "{{ steps.extract_invoice.out.line_items }}"
+          }
+        },
+        "note": "Runs only after approval (Nango proxy -> provider Create Bill)."
+      }
+    },
+    {
+      "id": "notify_vendor",
+      "type": "notify",
+      "name": "Send approval notification email",
+      "config": {
+        "connector": "nango.gmail",
+        "tool": "POST",
+        "arguments": {
+          "endpoint": "/messages/send",
+          "body": {
+            "to": "{{ steps.read_email.out.from }}",
+            "subject": "Invoice {{ steps.extract_invoice.out.invoice_number }} received & approved",
+            "body": "{{ steps.summary.out.text }}"
+          }
+        }
+      }
+    }
+  ],
+  "approvals": [{ "step": "approval", "approver_persona": "controller" }],
+  "outputs": [
+    { "key": "validation", "type": "json", "from": "{{ steps.validate.out }}" },
+    { "key": "summary", "type": "string", "from": "{{ steps.summary.out.text }}" }
+  ],
+  "business_value": "Turns manual AP invoice entry (15-30 min each) into a 1-2 min human approval over an AI-validated draft; duplicate/tax errors caught before anything posts; full audit trail."
+}

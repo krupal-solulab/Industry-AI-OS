@@ -16,8 +16,8 @@
     { "persona": "accountant", "roles": ["owner", "admin", "member"] },
     { "persona": "ap_clerk", "roles": ["owner", "admin", "member"] }
   ],
-  "connectors": [],
-  "workflows": [],
+  "connectors": ["nango.gmail", "nango.quickbooks"],
+  "workflows": ["invoice_verification"],
   "workspace": {
     "display_name": "Accounting AI OS",
     "tagline": "Copilots for AP/AR, month-end close, reconciliation, and audit.",

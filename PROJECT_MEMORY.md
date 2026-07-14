@@ -543,4 +543,36 @@ Web App (separate track) → Gateway (REST+GraphQL) → services → infra
 - **Next:** rebuild orchestrator (`up -d --build orchestrator`) to activate; once a valid
   LLM key is set, verify a real answer + the Mode-2 reminder.
 
+### 2026-07-14 — M3 (Accounting) start: invoice pack definition + Nango connector (sandbox)
+- **What:** Began the Accounting Executive Prototype (M3). User-confirmed scope: workflow =
+  **Invoice Verification** (AP invoice-to-approval); connector strategy = **sandbox first,
+  Nango-compatible from day one** (ADR-0018).
+  - `packs/accounting/workflows/invoice_verification.json` (NEW): the flow as a validated
+    definition — read_email → extract (document.parse/OCR) → search_vendor → search_existing
+    bills → **validate** (AI: vendor match + duplicate + tax) → **summary** (AI + approve/
+    reject rec) → **approval** (controller) → create_bill (after approval) → notify_vendor.
+    `connector.call` steps use the Nango proxy style: `tool` = HTTP method, `arguments` =
+    `{endpoint, query/body}` (e.g. `GET /vendor`, `POST /bill`) — unchanged sandbox→live.
+  - `packs/accounting/prompts/invoice_validate.md` + `invoice_summary.md` (NEW): the
+    accounting logic (dedup/tax/field checks + recommendation), instructed to mark missing
+    data "unknown" — never fabricate.
+  - `packs/accounting/pack.json`: `connectors: [nango.gmail, nango.quickbooks]`,
+    `workflows: [invoice_verification]`.
+  - `services/connectors/base.py`: NEW generic `NangoConnector` (per-provider instance) —
+    `invoke(method, {endpoint,query,body}, config)` → Nango proxy when creds present, else
+    **sandbox** provider-shaped fixtures flagged `_sandbox: true` (`_gmail_sandbox`,
+    `_quickbooks_sandbox`). Registered `nango.gmail` + `nango.quickbooks` in `registry.py`.
+  - `packages/shared/settings.py`: `NANGO_SECRET_KEY` (empty ⇒ sandbox) + `NANGO_HOST`.
+  - Docs: ADR-0018 (Nango) + adr/README index.
+- **Verified:** pack loader validates all 5 packs incl. the new definition (9 steps, types
+  correct, connectors match, approval references a real step); ruff + py_compile clean;
+  Nango sandbox smoke test returns the exact shapes the definition consumes (vendor `id`,
+  empty bills = no-dup, created bill, gmail from/attachments).
+- **Decision:** D-Nango via ADR-0018 (sandbox-first proxy). Confirms D11-era plan.
+- **NOT built yet (next):** the `PackWorkflow` Temporal executor + DB run persistence +
+  `POST /workflows/{key}` run/status API + pack seeding; a sandbox `document.parse`
+  (canned extracted invoice) so the demo flows without OCR; wire the assistant's
+  workflow-execution intent to start the run; the executive dashboard KPIs. Then live Nango
+  (OAuth connection per tenant + response field-mapping) and OCR for scanned invoices.
+
 <!-- New agents: append your entry above this line. -->
