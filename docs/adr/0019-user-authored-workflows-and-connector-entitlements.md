@@ -56,8 +56,12 @@ extras, default pack) — chat never breaks because the lookup failed.
 
 - New RLS-scoped table `connector_entitlements(tenant_id, connector_key, allowed, …)`,
   unique `(tenant_id, connector_key)`.
-- **Opt-in**: a connector is usable only when a row exists with `allowed=true`. The `echo`
-  reference connector is always usable.
+- **Unrestricted until restricted**: a tenant with **no** entitlement rows can use the whole
+  catalogue (so the Connector Hub is never empty out of the box). The moment an admin grants
+  it any connector, the tenant becomes *restricted* — an allowlist — and only `allowed=true`
+  connectors are visible/usable. The `echo` reference connector is always usable. (This
+  replaced the original strict opt-in, which surprised users with an empty Hub; per-tenant
+  curation is preserved — granting is how you scope a tenant down.)
 - `GET /connectors` filters to entitled connectors by default; `?all=true` returns the full
   catalogue each with an `entitled` flag (for an admin/builder palette). `invoke` and
   `configure` (when enabling) enforce entitlement.
@@ -70,10 +74,10 @@ extras, default pack) — chat never breaks because the lookup failed.
 - Adding a user flow is a data write, not a deploy — same posture as ADR-0016 (industry =
   config). The closed step vocabulary (ADR-0015) still bounds what a flow can do, so a
   user-built flow is as safe/auditable as a shipped one.
-- **Opt-in entitlements are a breaking default**: a tenant with no entitlement rows sees no
-  (non-reference) connectors. Existing/demo tenants must be grandfathered once via
-  `POST /connectors/entitlements/grant-defaults`. New tenants start empty by design ("only
-  the connectors they asked for").
+- **No empty-Hub surprise**: with the unrestricted-until-restricted model, tenants (incl. the
+  demo) see the full catalogue by default — nothing to grandfather. Scoping a tenant down is a
+  deliberate admin action (grant it a subset). `grant-defaults` remains available but is no
+  longer required for anything to appear.
 - Entitlement management (`PUT /connectors/entitlements/{key}`, `grant-defaults`) is
   **owner/admin-only** — an in-code `ctx.has_role(OWNER, ADMIN)` guard (403 otherwise) on top
   of the resource-level `check_ctx`; reading the list stays open to any member. The role gate
@@ -85,8 +89,8 @@ extras, default pack) — chat never breaks because the lookup failed.
 ## Activation (operational)
 
 1. `alembic upgrade head` (applies `0004`).
-2. Per tenant, once: `POST /api/connectors/connectors/entitlements/grant-defaults`
-   (grandfathers existing tenants; skip for new tenants you want scoped).
+2. Connectors are visible by default (unrestricted) — no grant step needed. To *scope* a
+   tenant, grant it a subset via `PUT /api/connectors/connectors/entitlements/{key}`.
 3. `POST /api/workflows/packs/seed` still seeds the shipped packs as before.
 4. Build/save a flow in the builder → it persists under pack `custom` and becomes runnable
    and assistant-addressable immediately.

@@ -33,6 +33,9 @@ class _Result:
     def __iter__(self):
         return iter(self._rows)
 
+    def all(self):
+        return list(self._rows)
+
 
 class _FakeSession:
     """In-memory backing for the two tables the endpoints touch, selected by SQL shape."""
@@ -49,10 +52,10 @@ class _FakeSession:
                 [SimpleNamespace(key=k, enabled=v["enabled"], config=v["config"])
                  for k, v in s.connectors.items()]
             )
-        if "SELECT connector_key FROM connector_entitlements" in sql:
+        if "SELECT connector_key, allowed FROM connector_entitlements" in sql:
             return _Result(
-                [SimpleNamespace(connector_key=k)
-                 for k, v in s.entitlements.items() if v["allowed"]]
+                [SimpleNamespace(connector_key=k, allowed=v["allowed"])
+                 for k, v in s.entitlements.items()]
             )
         if "SELECT connector_key, allowed, created_by, created_at" in sql:
             return _Result(
@@ -109,21 +112,26 @@ def env(monkeypatch):
         reset_context(token)
 
 
-async def test_list_default_hides_non_entitled(env):
+async def test_list_unrestricted_shows_all(env):
+    # A tenant with NO entitlement rows is unrestricted → the whole catalog is available.
     items = await m.list_connectors()
-    keys = {i["key"] for i in items}
-    # Only the always-usable reference connector shows before any grant.
-    assert keys == {"echo"}
+    assert {i["key"] for i in items} == {c.key for c in m.all_connectors()}
     assert all(i["entitled"] for i in items)
 
 
-async def test_list_all_shows_full_catalog_with_flags(env):
+async def test_list_all_flags_everything_when_unrestricted(env):
     items = await m.list_connectors(all=True)
     by_key = {i["key"]: i for i in items}
-    # Full catalog is returned regardless of entitlement.
     assert len(by_key) == len(m.all_connectors())
-    assert by_key["echo"]["entitled"] is True  # reference always entitled
-    assert by_key[NANGO_KEY]["entitled"] is False  # not granted yet
+    assert by_key["echo"]["entitled"] is True
+    assert by_key[NANGO_KEY]["entitled"] is True  # unrestricted → everything entitled
+
+
+async def test_granting_one_restricts_to_allowlist(env):
+    # The first grant flips the tenant to restricted: now only the granted connector
+    # (plus the always-usable reference) is visible.
+    await m.set_entitlement(NANGO_KEY, m.EntitlementBody(allowed=True))
+    assert {i["key"] for i in await m.list_connectors()} == {NANGO_KEY, "echo"}
 
 
 async def test_grant_defaults_grants_catalog(env):
@@ -145,19 +153,20 @@ async def test_grant_defaults_is_idempotent(env):
     assert len(env.entitlements) == first["count"]
 
 
-async def test_invoke_blocked_until_entitled_then_enabled(env):
+async def test_invoke_blocked_when_restricted_off_allowlist(env):
     body = m.InvokeBody(tool="GET", arguments={"endpoint": "/messages/1"})
 
-    # 1. Not entitled -> entitlement gate blocks.
+    # Restrict the tenant to a DIFFERENT connector so NANGO is off the allowlist.
+    await m.set_entitlement("composio", m.EntitlementBody(allowed=True))
     with pytest.raises(ValidationError, match="not entitled"):
         await m.invoke(NANGO_KEY, body)
 
-    # 2. Grant -> entitlement passes, but the connector is still not enabled.
-    await m.grant_default_entitlements()
+    # Grant NANGO -> entitled, but still not enabled.
+    await m.set_entitlement(NANGO_KEY, m.EntitlementBody(allowed=True))
     with pytest.raises(ValidationError, match="not enabled"):
         await m.invoke(NANGO_KEY, body)
 
-    # 3. Enable it -> invoke now runs (sandbox result, no network/creds).
+    # Enable it -> invoke now runs (sandbox result, no network/creds).
     await m.configure(NANGO_KEY, m.ConfigureBody(enabled=True, config={}))
     out = await m.invoke(NANGO_KEY, body)
     assert out["connector"] == NANGO_KEY
@@ -170,8 +179,9 @@ async def test_echo_always_usable(env):
     assert out["result"] == {"pong": True}
 
 
-async def test_configure_enable_requires_entitlement(env):
-    # Enabling a connector the tenant isn't entitled to is rejected...
+async def test_configure_enable_requires_entitlement_when_restricted(env):
+    # Restrict the tenant to a different connector so NANGO is off-allowlist...
+    await m.set_entitlement("composio", m.EntitlementBody(allowed=True))
     with pytest.raises(ValidationError, match="not entitled"):
         await m.configure(NANGO_KEY, m.ConfigureBody(enabled=True, config={}))
     # ...but disabling it is always allowed.

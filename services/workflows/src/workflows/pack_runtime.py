@@ -80,12 +80,23 @@ async def load_definition(ctx, pack_key: str, workflow_key: str) -> WorkflowDefi
     return defs[workflow_key]
 
 
+def _display_name(wf: WorkflowDefinition, source: str) -> str:
+    """A short, human title for the flow. User-built flows carry the name the author typed
+    (in `business_goal`); seeded packs put a long goal *sentence* there, so title-case the
+    key instead — 'invoice_verification' → 'Invoice Verification'."""
+    goal = (wf.business_goal or "").strip()
+    if source == "user" and goal:
+        return goal
+    return wf.key.replace("_", " ").replace("-", " ").strip().title() or wf.key
+
+
 def _definition_spec(wf: WorkflowDefinition, source: str, latest: dict | None = None) -> dict:
     """The graph-spec shape the FE flow visualization consumes (shared by list + CRUD)."""
     return {
         "pack_key": wf.pack,
         "workflow_key": wf.key,
-        "name": (wf.business_goal[:90] or wf.key),
+        "name": _display_name(wf, source),
+        "description": (wf.business_goal or "").strip(),
         "trigger": wf.trigger.type.value if wf.trigger else "manual",
         "connectors_required": wf.connectors_required,
         "steps": [

@@ -946,4 +946,45 @@ Closed the ADR-0019 follow-up: connector-entitlement management is no longer ava
   so this role gate doesn't affect auto-seeding; and the demo `owner@`/`admin@` users can manage
   entitlements from the API, while `member@`/`viewer@` cannot.
 
+### Change Log — Fixes from live testing: connector visibility, flow UI, builder crash, names
+Round of fixes after the user ran the builder live (screenshots). Five issues:
+- **Builder crashed: `Failed to resolve import "@xyflow/react"`.** Root cause: the
+  `@nangohq/frontend` pin was `^0.60.0`, which resolves to `>=0.60.0 <0.61.0` — no such
+  published version (latest is 0.71.0), so `npm install` aborted entirely and NEITHER dep
+  installed. Fixed the pin to `^0.71.0` in both `Acc-Wired/package.json` +
+  `Const-wired/package.json`. User must re-run `npm install`.
+- **Only 1 connector (echo) showed** in the Hub + builder palette. Root cause: the strict
+  **opt-in** entitlement model hid every non-reference connector until granted, and the demo
+  tenant had no grants. **Changed the model to "unrestricted until restricted"**
+  (`services/connectors/src/connectors/main.py`): `_entitled_keys` → `_entitlement_view(ctx)`
+  returns `(restricted, allowed)`; `restricted` is true once the tenant has ANY entitlement
+  row. `_is_entitled(kind,key,restricted,allowed)` = reference OR not-restricted OR in-allow.
+  `list_connectors`/`invoke`/`configure` all use it. Net: a tenant sees the full catalogue by
+  default (Hub never empty); granting a subset flips it to an allowlist (per-tenant curation
+  preserved). Reverted the now-counterproductive `seed.py` entitlement grant (it would have
+  flipped the demo into restricted mode). Tests rewritten to the new semantics — **10 passed**
+  (connectors), ruff clean.
+- **Workflow title was the truncated 90-char goal sentence** ("Process an inbound vendor
+  invoice from email end to end: extract it, validate (vendor, dup"). Fixed
+  `pack_runtime._definition_spec` via new `_display_name(wf, source)`: seeded flows →
+  title-cased key ("invoice_verification" → "Invoice Verification"); user flows → the name the
+  author typed. Added a `description` field (= business_goal) to the spec; both FE index pages
+  now render it as a small muted subtitle under the title.
+- **Horizontal scrollbar in the flow preview looked bad.** `WorkflowFlow.tsx` (both FEs) step
+  chain switched from `overflow-x-auto` to `flex flex-wrap` — nodes wrap to multiple rows, no
+  scrollbar. (This is on top of the earlier redesign: compact colored nodes, numbered badges,
+  truncated titles + hover-for-full-name, plug-icon connectors.)
+- **Ugly gray MiniMap box** in the builder canvas → removed `<MiniMap>` (import + element)
+  from `WorkflowBuilder.tsx` in both FEs; kept Background + Controls.
+- **Verified:** connectors 10 tests pass; workflows/connectors ruff + AST clean. FEs not
+  compiled (needs `npm install`). Docs updated: ADR-0019 (new entitlement model), RUNNING.md,
+  this file.
+- **Note on real credential connect:** the FE Connect button already calls
+  `getConnectSession → nango.openConnectUI`. That opens Nango's hosted Connect UI (OAuth/creds,
+  user authorizes their OWN account — no Nango dashboard) ONLY when `NANGO_SECRET_KEY` is set on
+  the backend + the integration is enabled in the Nango dashboard (one-time dev setup, ADR-0018).
+  Without the key, connect-session returns `{status:"sandbox"}` and the FE just enables the
+  connector (sandbox fixtures). So to get the real cred prompt, set `NANGO_SECRET_KEY` in
+  `.env`.
+
 <!-- New agents: append your entry above this line. -->

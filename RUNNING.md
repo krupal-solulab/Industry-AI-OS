@@ -124,20 +124,21 @@ npm run dev            # http://localhost:8080
 cd ../Const-wired && npm install && npm run dev
 ```
 
-What the rebuilt **`seed`** job now does automatically: `alembic upgrade head` (migration
-`0004` → `source` column + `connector_entitlements` table) **and** grants the demo tenant its
-default connector entitlements (`deploy/seed/seed.py`). So after `up --build`, the Connector
-Hub and the builder's connector palette are populated — no manual grant needed.
+The rebuilt **`seed`** job runs `alembic upgrade head` (migration `0004` → `source` column +
+`connector_entitlements` table). **Connectors are visible by default** — a tenant is
+*unrestricted* until an admin grants it specific connectors, so the Connector Hub and the
+builder's connector palette show the full catalogue out of the box (no manual grant needed).
 
 Then, logged in: **Workflows → Create workflow** → drag connectors + step nodes, wire them,
 name it, **Save**. It appears under **My workflows** (Run / Edit / Delete), runs through the
 same engine, and the AI assistant can start it by name. Seeded packs still show as
 read-only **Workflow templates**.
 
-> New tenants (not the demo) start with **no** connector entitlements by design (opt-in). To
-> grant one: `PUT /api/connectors/connectors/entitlements/{key}` `{ "allowed": true }`, or all
-> at once `POST /api/connectors/connectors/entitlements/grant-defaults` (both require an
-> owner/admin token).
+> **Per-tenant connector curation** (optional): a tenant stays unrestricted until you grant
+> it *any* connector — the first grant turns it into an allowlist (it then sees only granted
+> connectors). Owner/admin only: `PUT /api/connectors/connectors/entitlements/{key}`
+> `{ "allowed": true }` to add, `{ "allowed": false }` to remove; or
+> `POST /api/connectors/connectors/entitlements/grant-defaults` to grant the whole catalogue.
 
 ## Health check
 

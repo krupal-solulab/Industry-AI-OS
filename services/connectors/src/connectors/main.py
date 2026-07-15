@@ -51,35 +51,49 @@ async def _tenant_state(ctx) -> dict[str, dict]:
         return {r.key: {"enabled": r.enabled, "config": r.config or {}} for r in rows}
 
 
-async def _entitled_keys(ctx) -> set[str]:
-    """The set of connector keys this tenant is entitled to (opt-in allowlist).
+async def _entitlement_view(ctx) -> tuple[bool, set[str]]:
+    """Returns ``(restricted, allowed_keys)`` for this tenant.
 
-    A connector is entitled iff a row exists with allowed = true. RLS already scopes
-    the table to the tenant; we filter on tenant_id anyway to match the house style.
+    Model: a tenant is UNRESTRICTED until an admin grants it any connector. With zero
+    entitlement rows the whole catalog is available (so the Connector Hub is never empty
+    out of the box). The moment a row exists the tenant becomes *restricted* — an allowlist
+    — and only `allowed = true` connectors are usable/visible. This gives per-tenant
+    curation ("give this client only these two") without the empty-Hub surprise.
     """
     async with tenant_session(ctx) as s:
-        rows = await s.execute(
-            text(
-                "SELECT connector_key FROM connector_entitlements "
-                "WHERE tenant_id = :tid AND allowed = true"
-            ),
-            {"tid": ctx.tenant_id},
-        )
-        return {r.connector_key for r in rows}
+        rows = (
+            await s.execute(
+                text(
+                    "SELECT connector_key, allowed FROM connector_entitlements "
+                    "WHERE tenant_id = :tid"
+                ),
+                {"tid": ctx.tenant_id},
+            )
+        ).all()
+    restricted = len(rows) > 0
+    allowed = {r.connector_key for r in rows if r.allowed}
+    return restricted, allowed
+
+
+def _is_entitled(kind: str, key: str, restricted: bool, allowed: set[str]) -> bool:
+    """Reference connectors are always usable; otherwise entitled if the tenant is
+    unrestricted, or the key is on its allowlist."""
+    return kind == "reference" or not restricted or key in allowed
 
 
 @app.get("/connectors", tags=["connectors"])
 async def list_connectors(all: bool = False) -> list[dict]:
     """List connectors for the tenant.
 
-    By default returns only *entitled* connectors (the opt-in allowlist plus the
-    always-usable reference connector). Pass `?all=true` for the full catalog — the
-    admin/builder palette — each item flagged with its `entitled` state.
+    By default returns the connectors the tenant may use — the full catalog for an
+    unrestricted tenant, or just its allowlist once an admin has restricted it. Pass
+    `?all=true` for the full catalog regardless, each item flagged with its `entitled`
+    state (the admin/builder palette).
     """
     ctx = require_context()
     await check_ctx(ctx, "list", Resource(kind="connector", id="*", tenant_id=ctx.tenant_id))
     state = await _tenant_state(ctx)
-    entitled = await _entitled_keys(ctx)
+    restricted, allowed = await _entitlement_view(ctx)
     items = [
         {
             "key": c.key,
@@ -87,7 +101,7 @@ async def list_connectors(all: bool = False) -> list[dict]:
             "kind": c.kind,
             "enabled": state.get(c.key, {}).get("enabled", False),
             "tool_count": len(c.tools),
-            "entitled": c.kind == "reference" or c.key in entitled,
+            "entitled": _is_entitled(c.kind, c.key, restricted, allowed),
         }
         for c in all_connectors()
     ]
@@ -125,10 +139,10 @@ async def invoke(key: str, body: InvokeBody) -> dict:
     if not connector:
         raise NotFoundError(f"Unknown connector: {key}")
 
-    # Entitlement (opt-in allowlist) is checked before the enabled flag: a tenant can
-    # only enable/use a connector it has been entitled to. The reference connector is
-    # always usable regardless of entitlements.
-    if connector.kind != "reference" and key not in await _entitled_keys(ctx):
+    # Entitlement is checked before the enabled flag: a restricted tenant can only use a
+    # connector on its allowlist (an unrestricted tenant may use any; reference always).
+    restricted, allowed = await _entitlement_view(ctx)
+    if not _is_entitled(connector.kind, key, restricted, allowed):
         raise ValidationError(f"Connector '{key}' is not entitled for this tenant")
 
     state = await _tenant_state(ctx)
@@ -165,10 +179,12 @@ async def configure(key: str, body: ConfigureBody) -> dict:
     connector = get_connector(key)
     if not connector:
         raise NotFoundError(f"Unknown connector: {key}")
-    # Can't enable a connector the tenant isn't entitled to (reference is always usable).
-    # Disabling is always allowed, so the guard only fires when turning a connector on.
-    if body.enabled and connector.kind != "reference" and key not in await _entitled_keys(ctx):
-        raise ValidationError(f"Connector '{key}' is not entitled for this tenant")
+    # Can't enable a connector a restricted tenant isn't entitled to (reference always ok,
+    # unrestricted tenants may enable any). Disabling is always allowed.
+    if body.enabled:
+        restricted, allowed = await _entitlement_view(ctx)
+        if not _is_entitled(connector.kind, key, restricted, allowed):
+            raise ValidationError(f"Connector '{key}' is not entitled for this tenant")
     async with tenant_session(ctx) as s:
         await s.execute(
             text(

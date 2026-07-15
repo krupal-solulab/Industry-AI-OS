@@ -73,6 +73,7 @@ def test_definition_spec_shape():
         "pack_key": "custom",
         "workflow_key": "greeting_flow",
         "name": "Greet a user by name (builder smoke flow).",
+        "description": "Greet a user by name (builder smoke flow).",
         "trigger": "manual",
         "connectors_required": [],
         "steps": [{"id": "t1", "type": "transform", "name": "t1"}],
