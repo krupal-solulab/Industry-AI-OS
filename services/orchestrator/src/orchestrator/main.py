@@ -17,7 +17,7 @@ from ai_os_shared.audit import emit
 from ai_os_shared.auth import INTERNAL_HEADER
 from ai_os_shared.authz import check_ctx
 from ai_os_shared.db import admin_session, get_engine, new_uuid, tenant_session
-from ai_os_shared.errors import UpstreamError
+from ai_os_shared.errors import NotFoundError, UpstreamError
 from ai_os_shared.health import HealthRegistry
 from ai_os_shared.llm import get_llm
 from ai_os_shared.settings import get_settings
@@ -158,6 +158,25 @@ async def _persist(ctx, session_id: str, role: str, content: str) -> None:
         )
 
 
+def _title_from(message: str) -> str:
+    """A short session title derived from the first user message (users can rename)."""
+    t = " ".join((message or "").split())
+    return f"{t[:57]}…" if len(t) > 60 else (t or "New chat")
+
+
+async def _maybe_title(ctx, session_id: str, message: str) -> None:
+    """Set the session title from its first message — only if it has none yet (idempotent)."""
+    with contextlib.suppress(Exception):
+        async with tenant_session(ctx) as s:
+            await s.execute(
+                text(
+                    "UPDATE chat_sessions SET title = :t "
+                    "WHERE id = :id AND (title IS NULL OR title = '')"
+                ),
+                {"t": _title_from(message), "id": session_id},
+            )
+
+
 async def _login_source(ctx) -> str | None:
     """The user's industry, from their profile — used to resolve the active workspace
     when the request doesn't carry one explicitly."""
@@ -279,11 +298,13 @@ async def _gather_backend_data(
     use_rag: bool,
     query: str,
     pack_by_key: dict[str, str] | None = None,
-) -> str | None:
-    """Fetch/act on REAL data for the detected intent and return a context block for the
-    model. Never fabricated — on failure we say so. Connector calls + workflow starts go
-    through the existing Connector Hub / workflow service APIs (the assistant requests and
-    reports; it doesn't reimplement them)."""
+) -> tuple[str | None, dict]:
+    """Fetch/act on REAL data for the detected intent. Returns `(context_block, meta)`:
+    the block is text for the model; `meta` carries structured extras — notably
+    `meta["run"] = {run_id, status, ...}` when a workflow was actually started, so the
+    streaming endpoint can hand the FE a live run card. Never fabricated — on failure we
+    say so. Connector calls + workflow starts go through the existing Connector Hub /
+    workflow service APIs (the assistant requests and reports; it doesn't reimplement them)."""
     intent = ir.intent
 
     if intent is Intent.CONNECTOR_ACTION:
@@ -292,13 +313,13 @@ async def _gather_backend_data(
             return (
                 "The user asked for a connector task, but it didn't match a known quick-"
                 "action for this workspace. Ask them to connect the relevant tool or clarify."
-            )
+            ), {}
         result = await _invoke_connector(request, action.connector, action.method, action.endpoint)
         return (
             f"Connector quick-action '{action.label}' via {action.connector} — REAL result "
             f"(present it to the user; if it's a sandbox/error payload, say so honestly):\n"
             f"{json.dumps(result, indent=2)[:2500]}"
-        )
+        ), {}
 
     if intent is Intent.KNOWLEDGE_SEARCH or use_rag:
         ctx_text = await _retrieve_context(request, query)
@@ -306,7 +327,7 @@ async def _gather_backend_data(
             f"Evidence retrieved from the tenant's knowledge base:\n{ctx_text}"
             if ctx_text
             else "Knowledge base returned no matching passages for this query."
-        )
+        ), {}
 
     if intent in (Intent.WORKFLOW_STATUS, Intent.APPROVAL_STATUS):
         rows = await _workflows(request)
@@ -314,7 +335,7 @@ async def _gather_backend_data(
             return (
                 "Workflow status is currently unavailable "
                 "(the workflow service did not respond)."
-            )
+            ), {}
         if intent is Intent.APPROVAL_STATUS:
             pending = ("await", "pending", "review")
             rows = [
@@ -328,7 +349,7 @@ async def _gather_backend_data(
             else "Recent workflows"
         )
         body = json.dumps(rows[:10], indent=2)
-        return f"{label} for this tenant (real data, most recent first):\n{body}"
+        return f"{label} for this tenant (real data, most recent first):\n{body}", {}
 
     if intent is Intent.WORKFLOW_EXECUTION:
         available = (ws.workspace.copilots or ws.workflow_packs) if ws else []
@@ -347,24 +368,25 @@ async def _gather_backend_data(
                 "sheet_id": "demo",
             }
             result = await _start_pack_workflow(request, pack, wf, inputs)
+            meta = {"run": result} if result.get("run_id") else {}
             return (
                 f"Workflow '{wf}' was STARTED via the workflow service — REAL result "
                 f"(report the run_id + status honestly; if it's awaiting_approval, tell the "
                 f"user it's paused for their approval; if it's an error, say so):\n"
                 f"{json.dumps(result, indent=2)}"
-            )
+            ), meta
         return (
             "The user wants to run a workflow but no specific known workflow was identified. "
             f"Workflows this workspace can run: {available or 'none configured'}. Ask which "
             "one, and what inputs (e.g. the invoice/email) — do NOT claim anything ran."
-        )
+        ), {}
 
     if intent is Intent.DOCUMENT_ANALYSIS:
         return (
             "The user wants a document analyzed. Ask them to upload it (Documents page) or "
             "identify which stored document; do not invent its contents."
-        )
-    return None
+        ), {}
+    return None, {}
 
 
 @app.post("/chat", tags=["chat"])
@@ -381,6 +403,7 @@ async def chat(req: ChatRequest, request: Request) -> dict:
 
     model = await _resolve_model(ctx.tenant_id, req.model)
     session_id = await _ensure_session(ctx, req.session_id, model)
+    await _maybe_title(ctx, session_id, req.message)
     history = await _load_history(ctx, session_id)
 
     # Workspace awareness + mode.
@@ -397,7 +420,7 @@ async def chat(req: ChatRequest, request: Request) -> dict:
     intent_res = await classify_intent(
         req.message, history, ws, model, extra_workflow_keys=extra_workflow_keys
     )
-    data_block = await _gather_backend_data(
+    data_block, run_meta = await _gather_backend_data(
         request, intent_res, ws, req.use_rag, req.message, pack_by_key
     )
 
@@ -446,6 +469,7 @@ async def chat(req: ChatRequest, request: Request) -> dict:
         "answer": answer,
         "intent": intent_res.intent.value,
         "workspace": ws.key if ws else None,
+        "run": run_meta.get("run"),
     }
 
 
@@ -457,26 +481,51 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
     model = await _resolve_model(ctx.tenant_id, req.model)
     session_id = await _ensure_session(ctx, req.session_id, model)
+    await _maybe_title(ctx, session_id, req.message)
     history = await _load_history(ctx, session_id)
-    context = await _retrieve_context(request, req.message) if req.use_rag else ""
 
     ws = resolve_workspace(req.workspace, await _login_source(ctx))
     mode = Mode.parse(get_settings().assistant_mode)
+
+    # Same intent + real-data path as /chat, so the STREAMING assistant can actually START
+    # workflows (and hand the FE a live run card via the `workflow` frame) instead of only
+    # narrating. Fails soft: if intent classification errors (e.g. LLM down), we skip the
+    # data/workflow step and let the stream itself surface the error frame.
+    definitions = await _workflow_definitions(request)
+    extra_workflow_keys, pack_by_key = _workflow_pack_map(definitions)
+    try:
+        intent_res = await classify_intent(
+            req.message, history, ws, model, extra_workflow_keys=extra_workflow_keys
+        )
+        data_block, run_meta = await _gather_backend_data(
+            request, intent_res, ws, req.use_rag, req.message, pack_by_key
+        )
+    except Exception as exc:  # never let intent/data-gathering break the stream
+        log.warning("chat_stream.intent_failed", error=str(exc))
+        intent_res, data_block, run_meta = None, None, {}
+
     remind = (
         mode is Mode.STRICT_LENIENT
         and ws is not None
+        and intent_res is not None
+        and intent_res.intent in (Intent.GENERAL_QUESTION, Intent.GENERAL_CONVERSATION)
         and not last_assistant_had_reminder(history)
     )
     reminder = workspace_reminder(ws) if remind else ""
 
     messages: list[dict] = [{"role": "system", "content": build_system_prompt(ws, mode)}]
-    if context:
-        messages.append({"role": "system", "content": f"Relevant context:\n{context}"})
+    if data_block:
+        messages.append({"role": "system", "content": data_block})
     messages += history + [{"role": "user", "content": req.message}]
 
     async def generator():
         # json.dumps handles all SSE-unsafe characters (quotes, newlines, unicode).
         yield f"data: {json.dumps({'session_id': session_id, 'model': model})}\n\n"
+        # If a workflow was actually started, hand the FE the run so it can render a live
+        # run card inline and gate the composer until the flow finishes.
+        run = run_meta.get("run")
+        if run:
+            yield f"data: {json.dumps({'workflow': run})}\n\n"
         collected: list[str] = []
         errored = False
         try:
@@ -515,3 +564,95 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generator(), media_type="text/event-stream")
+
+
+@app.get("/chat/history", tags=["chat"])
+async def chat_history(session_id: str) -> dict:
+    """Messages for a chat session — lets the FE restore the conversation after a reload or
+    tab switch instead of resetting to a new chat. Returns an empty list if the session
+    isn't this user's (tenant-scoped via RLS + a user_id ownership check)."""
+    ctx = require_context()
+    await check_ctx(ctx, "read", Resource(kind="chat", id="chat", tenant_id=ctx.tenant_id))
+    async with tenant_session(ctx) as s:
+        owns = (
+            await s.execute(
+                text("SELECT 1 FROM chat_sessions WHERE id = :id AND user_id = :uid"),
+                {"id": session_id, "uid": ctx.user_id},
+            )
+        ).first()
+    if not owns:
+        return {"session_id": session_id, "messages": []}
+    return {"session_id": session_id, "messages": await _load_history(ctx, session_id)}
+
+
+@app.get("/chat/sessions", tags=["chat"])
+async def list_chat_sessions() -> list[dict]:
+    """This user's chat sessions for the Conversations sidebar — title, a preview of the
+    first message, and last-activity time, most recent first. Empty sessions (created but
+    never used) are omitted."""
+    ctx = require_context()
+    await check_ctx(ctx, "read", Resource(kind="chat", id="chat", tenant_id=ctx.tenant_id))
+    async with tenant_session(ctx) as s:
+        rows = await s.execute(
+            text(
+                """SELECT s.id, s.title, s.created_at,
+                     (SELECT m.content FROM chat_messages m
+                        WHERE m.session_id = s.id AND m.role = 'user'
+                        ORDER BY m.created_at ASC LIMIT 1) AS preview,
+                     (SELECT MAX(m.created_at) FROM chat_messages m
+                        WHERE m.session_id = s.id) AS last_activity
+                   FROM chat_sessions s
+                   WHERE s.user_id = :uid
+                     AND EXISTS (SELECT 1 FROM chat_messages m WHERE m.session_id = s.id)
+                   ORDER BY COALESCE(
+                     (SELECT MAX(m.created_at) FROM chat_messages m WHERE m.session_id = s.id),
+                     s.created_at) DESC
+                   LIMIT 100"""
+            ),
+            {"uid": ctx.user_id},
+        )
+        return [
+            {
+                "id": str(r.id),
+                "title": r.title or _title_from(r.preview or ""),
+                "preview": (r.preview or "")[:120],
+                "created_at": r.created_at.isoformat(),
+                "last_activity": r.last_activity.isoformat() if r.last_activity else None,
+            }
+            for r in rows
+        ]
+
+
+class RenameSession(BaseModel):
+    title: str
+
+
+@app.patch("/chat/sessions/{session_id}", tags=["chat"])
+async def rename_chat_session(session_id: str, body: RenameSession) -> dict:
+    """Rename a chat session (the pencil in the sidebar)."""
+    ctx = require_context()
+    await check_ctx(ctx, "send", Resource(kind="chat", id="chat", tenant_id=ctx.tenant_id))
+    title = (body.title or "").strip()[:80] or "Untitled"
+    async with tenant_session(ctx) as s:
+        res = await s.execute(
+            text("UPDATE chat_sessions SET title = :t WHERE id = :id AND user_id = :uid"),
+            {"t": title, "id": session_id, "uid": ctx.user_id},
+        )
+    if res.rowcount == 0:
+        raise NotFoundError("Chat session not found")
+    return {"id": session_id, "title": title}
+
+
+@app.delete("/chat/sessions/{session_id}", tags=["chat"])
+async def delete_chat_session(session_id: str) -> dict:
+    """Delete a chat session and its messages (ON DELETE CASCADE)."""
+    ctx = require_context()
+    await check_ctx(ctx, "send", Resource(kind="chat", id="chat", tenant_id=ctx.tenant_id))
+    async with tenant_session(ctx) as s:
+        res = await s.execute(
+            text("DELETE FROM chat_sessions WHERE id = :id AND user_id = :uid"),
+            {"id": session_id, "uid": ctx.user_id},
+        )
+    if res.rowcount == 0:
+        raise NotFoundError("Chat session not found")
+    return {"id": session_id, "status": "deleted"}

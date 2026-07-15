@@ -85,7 +85,7 @@ async def test_user_workflow_started_with_custom_pack(monkeypatch):
     monkeypatch.setattr(main, "_start_pack_workflow", fake_start)
 
     ir = IntentResult(intent=Intent.WORKFLOW_EXECUTION, workflow="workflow1")
-    block = await main._gather_backend_data(
+    block, meta = await main._gather_backend_data(
         request=None,
         ir=ir,
         ws=None,  # no industry config → no default pack; must come from the map
@@ -97,6 +97,8 @@ async def test_user_workflow_started_with_custom_pack(monkeypatch):
     assert captured["pack"] == "custom"
     assert captured["workflow"] == "workflow1"
     assert block is not None and "run-abc" in block
+    # the started run is also surfaced structurally so the stream can emit a `workflow` frame
+    assert meta.get("run") == {"run_id": "run-abc", "status": "awaiting_approval"}
 
 
 async def test_seeded_workflow_falls_back_to_default_pack_when_unmapped(monkeypatch):

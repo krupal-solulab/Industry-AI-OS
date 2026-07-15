@@ -1049,4 +1049,69 @@ live run view that polls a run and shows steps lighting up + the human approval 
   doesn't surface the run_id, so the live view is reached via the Workflows tab Run button. Making
   the chat emit the run_id + a "View run →" link needs a structured SSE frame (backend + FE).
 
+### Change Log — Persistent chat session + in-chat live workflow + template flow-modal
+Three linked features (backend + both FEs), from user feedback on the AI Assistant.
+- **Backend (orchestrator):** (1) `/chat/stream` now runs the SAME intent + `_gather_backend_data`
+  path as `/chat` — previously the streaming endpoint (what the FE uses) only narrated and never
+  actually started workflows. It now starts the run and emits a structured SSE frame
+  `{"workflow": {run_id, status, ...}}` right after the `{session_id, model}` frame (fails soft:
+  if intent classification errors, it skips the data step and the stream still surfaces its error
+  frame). (2) `_gather_backend_data` refactored to return `(context_block, meta)`; `meta["run"]`
+  carries the started-run info; `/chat` also returns `run` now. (3) New `GET /chat/history?
+  session_id=` returns the persisted messages (chat sessions were already stored server-side via
+  `_ensure_session`/`_persist`) so the FE can restore a conversation. Orchestrator tests updated
+  for the tuple return → **5 pass**; ruff clean.
+- **FE (Acc-Wired + Const-wired):**
+  1. **Chat session persists across tab switches** — `chatStream` now surfaces the first frame's
+     `session_id` + the `workflow` frame (Acc-Wired: widened async-generator yield type; Const-wired:
+     added `onSession`/`onWorkflow` callbacks). The assistant page keeps `sessionId` in state +
+     `localStorage["aios.chat.session_id"]`, sends it on every request to continue the server
+     session, mirrors messages to `localStorage["aios.chat.messages"]`, and on mount hydrates from
+     the new `getChatHistory`. "New chat" clears the keys.
+  2. **Live workflow inside the chat + gated composer** — on a `workflow` frame the page sets
+     `activeRunId` (persisted to `localStorage["aios.chat.active_run"]`) and renders the existing
+     `<RunView>` inline in the chat (steps light up + Approve/Reject + result). `useRun(activeRunId)`
+     (shared `["run",id]` query) drives a gate: the textarea + send are DISABLED with a "finish the
+     workflow above to continue" hint until the run is `completed`/`rejected` (or errors/404 →
+     unlock). So the user watches the flow and can only continue the chat after it finishes.
+  3. **Template flow-modal** — clicking a Workflow template opens a shadcn `Dialog` (new
+     `WorkflowDialog.tsx` / `WorkflowFlowDialog.tsx`) showing an n8n-style graph that fits without
+     horizontal scroll: step nodes row (type-colored, numbered, truncated) + `connectors_required`
+     row below, linked by **curved SVG paths** from each `connector.call`/`notify` step to its
+     `config.connector` (fetched via `getWorkflowDefinition`), a type legend, and **hover tooltips**
+     (shadcn Tooltip) with per-step details (tool + endpoint / prompt snippet). The Run button
+     `stopPropagation`s so it doesn't open the dialog.
+- **Verified:** backend ruff/AST/tests green; both FEs grep-confirmed (getChatHistory, workflow
+  frame, dialog component, RunView+activeRun+session localStorage all present). FEs NOT compiled
+  (node_modules incomplete) — SSE `workflow` frame shape + curve-measurement timing only confirmable
+  on the live app. Needs `up -d --build` (orchestrator) + `npm install && npm run dev` per FE.
+
+### Change Log — Multi-session Conversations sidebar (ChatGPT-style chat history)
+User wanted a full conversations sidebar (list past chats, open/rename/delete), not just
+single-session persistence.
+- **Backend (orchestrator):** `chat_sessions` already had a `title` column (no migration). Added
+  `_maybe_title` — auto-titles a session from its first user message (idempotent, guarded on
+  `title IS NULL`), called in `/chat` + `/chat/stream` after `_ensure_session`. New endpoints:
+  `GET /chat/sessions` (this user's sessions — id, title, first-message `preview`, `last_activity`
+  from MAX(message time); empty sessions omitted; most-recent first; LIMIT 100),
+  `PATCH /chat/sessions/{id}` `{title}` (rename), `DELETE /chat/sessions/{id}` (cascade-deletes
+  messages). All user-scoped (`user_id`) + tenant-scoped (RLS). Actions reuse chat `read`/`send`
+  (no Cerbos change). `NotFoundError` added to imports. ruff clean; orchestrator tests **5 pass**.
+- **FE (Acc-Wired + Const-wired):** `client.ts` gained `ChatSessionSummary` + `listChatSessions`/
+  `renameChatSession`/`deleteChatSession`; hooks `useChatSessions`, `useRenameChatSession`,
+  `useDeleteChatSession`. `app.assistant.tsx` refactored to a **two-column layout**: a left
+  **Conversations** panel (`hidden md:flex`, ~300px) + the existing chat column. Sidebar: header +
+  new-chat icon, client-side search (title+preview), sessions **grouped by date** (Today /
+  Yesterday / Previous 7 days / Older via a pure helper on `last_activity ?? created_at`), each row
+  = icon + title + muted preview + short time, **active row highlighted**. Click a row →
+  `loadSession(id)`: set/persist `sessionId`, clear the active-run card, `getChatHistory(id)` →
+  replace messages + mirror to localStorage. Per-row hover **rename** (pencil → prompt) + **delete**
+  (trash → confirm; if active, resets to New chat); main-chat header shows the active title + a
+  pencil to rename. `["chat-sessions"]` invalidated after send (`[DONE]`), New chat, rename, delete
+  — so auto-titled sessions appear/reorder. All prior behavior (streaming, inline RunView + composer
+  gating, session persistence) preserved.
+- **Verified:** backend ruff/AST/tests green; both FEs grep-confirmed (3 client fns + 3 hooks +
+  sidebar/loadSession wiring). FEs NOT compiled (node_modules incomplete). Needs `up -d --build`
+  (orchestrator) + `npm install && npm run dev` per FE.
+
 <!-- New agents: append your entry above this line. -->
