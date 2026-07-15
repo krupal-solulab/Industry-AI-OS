@@ -25,9 +25,11 @@ from ai_os_shared.tenant_context import require_context
 from ai_os_shared.types import Resource
 from orchestrator.assistant import (
     Intent,
+    IntentResult,
     Mode,
     build_system_prompt,
     classify_intent,
+    find_action,
     last_assistant_had_reminder,
     resolve_workspace,
     workspace_reminder,
@@ -193,12 +195,111 @@ async def _workflows(request: Request, path: str = "") -> list | dict | None:
         return None
 
 
+async def _workflow_definitions(request: Request) -> list[dict]:
+    """Fetch this tenant's workflow definitions (seed + user-built) from the workflows
+    service (`GET /packs/definitions`), forwarding the signed context header so tenancy is
+    preserved. Returns [] on ANY failure — a definitions-lookup error must never break chat;
+    the assistant then falls back to config-only workflow keys + the default pack."""
+    settings = get_settings()
+    header = request.headers.get(INTERNAL_HEADER)
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{settings.workflows_url.rstrip('/')}/packs/definitions",
+                headers={INTERNAL_HEADER: header} if header else {},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data if isinstance(data, list) else []
+    except (httpx.HTTPError, ValueError) as exc:
+        log.warning("chat.definitions_fetch_failed", error=str(exc))
+        return []
+
+
+def _workflow_pack_map(definitions: list[dict]) -> tuple[list[str], dict[str, str]]:
+    """From `/packs/definitions` specs build (a) the ordered, de-duped list of workflow
+    keys to hand the classifier as `extra_workflow_keys`, and (b) a `{workflow_key:
+    pack_key}` map so a resolved key is started with the CORRECT pack (user flows →
+    'custom'). All definitions are included — this also lets seeded flows resolve their
+    real pack instead of the workspace default."""
+    keys: list[str] = []
+    pack_by_key: dict[str, str] = {}
+    for d in definitions:
+        wf = d.get("workflow_key")
+        pack = d.get("pack_key")
+        if not wf:
+            continue
+        if wf not in pack_by_key:
+            keys.append(wf)
+        if pack:
+            pack_by_key[wf] = pack
+    return keys, pack_by_key
+
+
+async def _invoke_connector(request: Request, connector: str, method: str, endpoint: str) -> dict:
+    """Run a connector quick-action through the Connector Hub (real data; sandbox if not
+    live). Returns an error dict on failure — never fabricated."""
+    settings = get_settings()
+    header = request.headers.get(INTERNAL_HEADER)
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.post(
+                f"{settings.connectors_url.rstrip('/')}/connectors/{connector}/invoke",
+                headers={INTERNAL_HEADER: header} if header else {},
+                json={"tool": method, "arguments": {"endpoint": endpoint}},
+            )
+            resp.raise_for_status()
+            return resp.json().get("result", {})
+    except httpx.HTTPError as exc:
+        return {"status": "error", "connector": connector, "error": str(exc)}
+
+
+async def _start_pack_workflow(request: Request, pack: str, workflow: str, inputs: dict) -> dict:
+    """Ask the workflows service to actually START a pack run. Returns the run result
+    (run_id + status) or an error dict."""
+    settings = get_settings()
+    header = request.headers.get(INTERNAL_HEADER)
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{settings.workflows_url.rstrip('/')}/packs/{workflow}/run",
+                headers={INTERNAL_HEADER: header} if header else {},
+                json={"pack_key": pack, "inputs": inputs},
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPError as exc:
+        return {"status": "error", "error": str(exc)}
+
+
 async def _gather_backend_data(
-    request: Request, intent: Intent, ws, use_rag: bool, query: str
+    request: Request,
+    ir: IntentResult,
+    ws,
+    use_rag: bool,
+    query: str,
+    pack_by_key: dict[str, str] | None = None,
 ) -> str | None:
-    """Fetch REAL data relevant to the detected intent and return it as a context block
-    for the model. Never fabricated — on failure we say so. Nothing here executes a
-    workflow or calls a connector; that stays in the orchestrator/workflow services."""
+    """Fetch/act on REAL data for the detected intent and return a context block for the
+    model. Never fabricated — on failure we say so. Connector calls + workflow starts go
+    through the existing Connector Hub / workflow service APIs (the assistant requests and
+    reports; it doesn't reimplement them)."""
+    intent = ir.intent
+
+    if intent is Intent.CONNECTOR_ACTION:
+        action = find_action(ws.key if ws else None, ir.action)
+        if not action:
+            return (
+                "The user asked for a connector task, but it didn't match a known quick-"
+                "action for this workspace. Ask them to connect the relevant tool or clarify."
+            )
+        result = await _invoke_connector(request, action.connector, action.method, action.endpoint)
+        return (
+            f"Connector quick-action '{action.label}' via {action.connector} — REAL result "
+            f"(present it to the user; if it's a sandbox/error payload, say so honestly):\n"
+            f"{json.dumps(result, indent=2)[:2500]}"
+        )
+
     if intent is Intent.KNOWLEDGE_SEARCH or use_rag:
         ctx_text = await _retrieve_context(request, query)
         return (
@@ -229,19 +330,39 @@ async def _gather_backend_data(
         body = json.dumps(rows[:10], indent=2)
         return f"{label} for this tenant (real data, most recent first):\n{body}"
 
-    if intent in (Intent.WORKFLOW_EXECUTION, Intent.DOCUMENT_ANALYSIS):
+    if intent is Intent.WORKFLOW_EXECUTION:
         available = (ws.workspace.copilots or ws.workflow_packs) if ws else []
-        rows = await _workflows(request)
-        recent = json.dumps(rows[:5], indent=2) if rows else "none / unavailable"
+        # Start the run only when a known workflow is identified and we have a pack.
+        wf = ir.workflow
+        # Prefer the pack from the tenant's definitions (user-built flows → "custom",
+        # seeded flows → their real pack); fall back to the workspace default only when
+        # the resolved key isn't in the definitions map.
+        default_pack = ws.workflow_packs[0] if (ws and ws.workflow_packs) else None
+        pack = (pack_by_key or {}).get(wf) if wf else None
+        pack = pack or default_pack
+        if wf and pack:
+            inputs = {
+                "invoice_email": {"id": "chat-demo", "from": "vendor@example.com"},
+                "has_accounting_connector": False,
+                "sheet_id": "demo",
+            }
+            result = await _start_pack_workflow(request, pack, wf, inputs)
+            return (
+                f"Workflow '{wf}' was STARTED via the workflow service — REAL result "
+                f"(report the run_id + status honestly; if it's awaiting_approval, tell the "
+                f"user it's paused for their approval; if it's an error, say so):\n"
+                f"{json.dumps(result, indent=2)}"
+            )
         return (
-            "WORKFLOW REQUEST HANDLING — do NOT claim anything ran.\n"
-            f"Workflows this workspace can automate: {available or 'none configured'}.\n"
-            f"The tenant's recent workflow runs (real): {recent}.\n"
-            "Execution capability today: only 'document_review_approval' runs end-to-end "
-            "(needs an uploaded document). For any other workflow, identify it, list the "
-            "inputs you'd need, and offer to start it once those are provided — but state "
-            "plainly that automated execution for it is not wired yet. Never invent a run id "
-            "or a result."
+            "The user wants to run a workflow but no specific known workflow was identified. "
+            f"Workflows this workspace can run: {available or 'none configured'}. Ask which "
+            "one, and what inputs (e.g. the invoice/email) — do NOT claim anything ran."
+        )
+
+    if intent is Intent.DOCUMENT_ANALYSIS:
+        return (
+            "The user wants a document analyzed. Ask them to upload it (Documents page) or "
+            "identify which stored document; do not invent its contents."
         )
     return None
 
@@ -266,10 +387,18 @@ async def chat(req: ChatRequest, request: Request) -> dict:
     ws = resolve_workspace(req.workspace, await _login_source(ctx))
     mode = Mode.parse(get_settings().assistant_mode)
 
+    # Fetch the tenant's workflow definitions (seed + user-built) so the classifier can
+    # resolve user-authored flow keys and each resolved key is started with its correct
+    # pack_key. Fails soft — an empty list keeps config-only keys + the default pack.
+    definitions = await _workflow_definitions(request)
+    extra_workflow_keys, pack_by_key = _workflow_pack_map(definitions)
+
     # Intent detection, then gather real backend data for that intent.
-    intent_res = await classify_intent(req.message, history, ws, model)
+    intent_res = await classify_intent(
+        req.message, history, ws, model, extra_workflow_keys=extra_workflow_keys
+    )
     data_block = await _gather_backend_data(
-        request, intent_res.intent, ws, req.use_rag, req.message
+        request, intent_res, ws, req.use_rag, req.message, pack_by_key
     )
 
     messages: list[dict] = [{"role": "system", "content": build_system_prompt(ws, mode)}]

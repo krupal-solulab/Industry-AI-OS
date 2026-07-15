@@ -575,4 +575,375 @@ Web App (separate track) → Gateway (REST+GraphQL) → services → infra
   workflow-execution intent to start the run; the executive dashboard KPIs. Then live Nango
   (OAuth connection per tenant + response field-mapping) and OCR for scanned invoices.
 
+### 2026-07-14 — M3: pack execution proven end-to-end (engine resume + sandbox parse)
+- **What:** Made the invoice pack actually RUN — the core of the PackWorkflow runtime,
+  verified offline (the durable Temporal wrapper + HTTP API + DB persistence + seeding are
+  the next slice; not built yet).
+  - `packages/shared/.../workflow/engine.py`: `WorkflowEngine.run()` gained an optional
+    `ctx` param + skips already-completed steps ⇒ **suspend/resume**. A handler raising
+    `PendingApproval` at the approval step suspends; the passed-in `ctx` (mutated in place)
+    retains completed steps so the executor persists it and resumes by passing it back.
+    Backward-compatible (existing callers unaffected).
+  - `services/workflows/.../step_handlers.py`: `document.parse` now returns a clearly
+    **labeled sandbox extracted invoice** (`_sandbox: true`) when files are present (real
+    OCR is the MILESTONE_3 add-on), so the flow runs without OCR.
+- **Verified end-to-end (offline):** drove `packs/accounting/.../invoice_verification` through
+  `WorkflowEngine` + `build_handlers` + the **sandbox `NangoConnector`** + fake LLM:
+  all 9 steps ran — read_email → extract(sandbox) → search_vendor (V-1001) → duplicate
+  check → validate → summary → **suspended at approval** → resumed on decision →
+  create_bill (BILL-5001) → notify_vendor. Suspend-at-approval + resume confirmed.
+  23 shared unit tests still pass; ruff + py_compile clean.
+- **NOT built yet (next slice):** the Temporal `PackWorkflow` (wrap this engine loop with
+  `workflow.wait_condition` for the approval signal, like `DocumentReviewApproval`) +
+  activities; DB run/step persistence (tables from migration 0002); pack **seeding** into
+  the DB registry; `POST /workflows/{key}/run` + status/approve API; then wire the
+  assistant's workflow-execution intent to start the run + the executive dashboard KPIs.
+
+### 2026-07-14 — M3: invoice flow reworked to demo-mode + branch (QuickBooks vs Sheets)
+- **Why:** User has Nango connections for **google-mail / google-sheet / google-drive** but
+  **no QuickBooks yet**. New flow: after approval, branch on "is an accounting connector
+  available?" → YES = create bill (QuickBooks/Xero); NO = demo mode = save invoice metadata
+  to Google Sheets. Then archive PDF to Drive + email vendor.
+- **Engine — conditional branching (NEW capability):**
+  - `schema.py`: `Step` gained optional `when: str | None` (a `{{ }}` guard).
+  - `engine.py`: skips a step whose `when` resolves falsy (records `{"skipped": true}`);
+    added public `is_truthy()` (treats ''/false/0/no/none/null as false).
+  - `step_handlers.py`: implemented the `branch` step type — resolves `condition` and
+    returns `on_true`/`on_false` flag sets; downstream steps gate via `when`.
+- **Connectors:** renamed/registered Nango connectors to match the tenant's integration IDs
+  — `nango.google-mail`, `nango.google-sheet`, `nango.google-drive` (+ `nango.quickbooks`
+  for the future YES branch). Added `_sheets_sandbox` (read rows / append) + `_drive_sandbox`
+  (upload) fixtures.
+- **Pack:** rewrote `packs/accounting/workflows/invoice_verification.json` (v2.0.0): Gmail
+  read → Eagle-Doc/OCR (sandbox) → read ledger (Sheets) → validate → summary → approval →
+  **`route` branch** → `create_bill` (`when use_quickbooks`) / `save_to_sheets`
+  (`when use_sheets`) → archive to Drive → email. Inputs add `has_accounting_connector`
+  (demo=false) + `sheet_id`. Prompt `invoice_validate` updated (invoice + existing_records;
+  "unknown" when no accounting system). Manifest connectors updated.
+- **Verified end-to-end (offline, both branches):** demo mode (has_accounting_connector=false)
+  → route.use_sheets, `create_bill` SKIPPED, `save_to_sheets` saved, archive ran; QuickBooks
+  mode (=true) → `create_bill` BILL-5001, `save_to_sheets` SKIPPED. Suspend/resume at approval
+  intact. 23 shared tests pass; ruff + py_compile clean; all packs valid.
+- **Note:** `con1@acme.com` is a zombie (created before the demo org existed → "JWT carries
+  no organization/tenant claim" on login). Use a fresh signup email (or con2@acme.com).
+- **NOT built yet (next):** Temporal `PackWorkflow` wrapper + run/status API + DB persistence
+  + pack seeding; wire assistant workflow-execution intent; then live Nango (OAuth per tenant
+  + response field-mapping) + Eagle Doc OCR.
+
+### 2026-07-14 — M3 slice B: pack run runtime + run/approve API + pack seeding
+- **What:** Made pack workflows triggerable + durable over HTTP (backbone for the FE/
+  assistant to run the invoice copilot). Chose a **DB-backed executor** (not Temporal) so
+  it's verifiable now and demoable; the engine's suspend/resume + persisted `context`
+  already survive the human-approval pause. Temporal `PackWorkflow` wrapping (ADR-0006,
+  retries/restart durability) is an additive follow-up.
+  - `services/workflows/.../pack_runtime.py` (NEW): loads a definition from the pack files;
+    builds engine step-handlers with LIVE deps — LLM (LiteLLM), Connector Hub (HTTP
+    `POST /connectors/{key}/invoke`, forwarding the signed `X-AIOS-Context`), Knowledge
+    (`/retrieve`), prompt files, and approval (raises `PendingApproval`). `start_run` runs
+    to completion or the approval pause; on pause it persists `workflow_runs.context` +
+    creates an `approval_tasks` row (status `awaiting_approval`). `resume_run` rehydrates
+    the context and resumes (engine skips completed steps) → completed/rejected. Also
+    `seed_tenant_packs` upserts all repo packs into `workflow_packs`/`workflow_definitions`.
+    Persists per-step outputs to `workflow_step_runs`.
+  - `services/workflows/.../main.py`: new endpoints — `POST /workflows/{workflow_key}/run`
+    `{pack_key, inputs}`, `GET /workflows/runs/{run_id}`, `POST /workflows/runs/{run_id}/
+    approve|reject` `{comment}`, `POST /workflows/seed`. Legacy document-review endpoints
+    kept. Uses migration-0002 tables (already present).
+- **Verified (offline):** ruff + py_compile clean; the runtime loads `invoice_verification`
+  (11 steps), resolves the approver (controller), registers all handlers incl. `branch`,
+  and loads prompts. **NOT yet run live** — the DB writes + HTTP calls to connectors/
+  knowledge + the full run need the stack up (rebuild workflows) + `POST /workflows/seed`.
+- **How to test B (after `up -d --build`):** `POST /workflows/seed` → `POST /api/workflows/
+  invoice_verification/run {pack_key:"accounting", inputs:{invoice_email:{id:"..."},
+  has_accounting_connector:false, sheet_id:"..."}}` → `GET /api/workflows/runs/{id}` (awaiting
+  approval + summary) → `POST /api/workflows/runs/{id}/approve` → completes (sandbox
+  connectors). Connectors must be enabled for the tenant (Connectors page toggle or seed).
+- **Next (M3 remaining):** A = Nango Connect flow (backend connect-session + FE Connect
+  button); C = assistant connector-actions ("check my mail") + start-workflow-by-chat;
+  D = FE workflow flow-graph visualization.
+
+### 2026-07-14 — M3 slice A: Nango Connect flow (client self-authorization)
+- **Why:** Each client must authorize their OWN Google account from inside our app (not the
+  Nango dashboard, no shared creds). Per-tenant connector config already IS the
+  client→connection mapping (RLS `connectors` table; `config.connection_id`).
+- **Backend:** `services/connectors/main.py` → `POST /connectors/{key}/connect-session`:
+  for a `nango`-kind connector, calls Nango `POST /connect/sessions` (end_user = tenant id,
+  allowed_integrations = provider) and returns a short-lived `session_token`. If
+  `NANGO_SECRET_KEY` is unset → returns `{status:"sandbox"}` (no live connect needed). The
+  FE opens Nango's Connect UI with that token; on success it PUTs the `connection_id` back
+  via the existing `PUT /connectors/{key}` (`config.connection_id`) → `NangoConnector`
+  flips from sandbox to live for that tenant. Verified: ruff + py_compile clean.
+- **FE:** added `getConnectSession(key)` + `ConnectSession` type to both `Acc-Wired` and
+  `Const-wired` `client.ts` (exported on `api`). The Connect-button wiring (Nango frontend
+  SDK `openConnectUI`) is left to wire in the Connectors page — SDK signature is
+  version-sensitive; needs `npm i @nangohq/frontend`. Snippet handed to the user.
+- **To go live:** set `NANGO_SECRET_KEY` (+ `NANGO_HOST`) in backend `.env`; client clicks
+  Connect → authorizes → connection_id stored → workflow calls run against their account.
+- **Remaining M3:** C = assistant connector-actions ("check my mail") + start-workflow-by-chat;
+  D = FE workflow flow-graph visualization.
+
+### 2026-07-14 — M3 slice C: assistant connector-actions + start-workflow-by-chat
+- **What:** The assistant now *acts*, not just answers — via existing service APIs.
+  - `orchestrator/assistant.py`: new `Intent.CONNECTOR_ACTION`; a closed, per-industry
+    allow-list `WORKSPACE_ACTIONS` of connector quick-actions (`recent_mail` →
+    `nango.google-mail GET /messages`, `recent_files` → `nango.google-drive`), with
+    `actions_for()`/`find_action()`. `IntentResult` gained `action`; `classify_intent`
+    now returns `{intent, workflow, action}` and knows the action keys. (No arbitrary
+    endpoint selection — safety.)
+  - `orchestrator/main.py`: `_invoke_connector()` (POST Connector Hub invoke) +
+    `_start_pack_workflow()` (POST workflows `/{key}/run`), both forwarding the signed
+    context. `_gather_backend_data` now takes the full `IntentResult` and:
+    * **connector_action** → invokes the matched quick-action and hands the REAL result to
+      the model to present ("check my recent mails" → returns the mails);
+    * **workflow_execution** → when a known workflow + pack resolve, actually **STARTS the
+      run** (slice B API) and reports the real run_id/status (e.g. "awaiting your approval").
+  - Ground rules unchanged: never fabricate; report real results/errors honestly.
+- **Verified (offline):** ruff + py_compile clean; the action registry + intent parsing
+  resolve correctly. **Live behavior needs the stack + an LLM key** (classifier + phrasing)
+  + connectors enabled.
+- **Remaining M3:** D = FE workflow flow-graph visualization (Acc-Wired + Const-wired).
+
+### 2026-07-14 — M3 slice D: workflow flow-graph visualization + /packs/* route namespace
+- **Backend:** `GET /packs/definitions` (workflows service) → `pack_runtime.list_definitions`:
+  every seeded workflow as a graph spec (steps `{id,type,name}` + `connectors_required` +
+  trigger + latest run status). **Renamed all pack endpoints to `/packs/*`** to avoid the
+  legacy single-segment `/workflows/{workflow_id}` route shadowing `/workflows/definitions`
+  + `/workflows/seed`: now `POST /packs/{key}/run`, `GET /packs/definitions`,
+  `GET /packs/runs/{id}`, `POST /packs/runs/{id}/approve|reject`, `POST /packs/seed`.
+  Orchestrator `_start_pack_workflow` updated to `/packs/{key}/run`. ruff + compile clean.
+- **Frontend (Acc-Wired + Const-wired):** new `components/workflow/WorkflowFlow.tsx` renders
+  the step graph (numbered nodes, type-colored badges, connector chips, legend);
+  `listWorkflowDefinitions()` client fn (`GET /api/workflows/packs/definitions`) +
+  `useWorkflowDefinitions` hook; wired into the Workflows page as a "Workflow templates"
+  section (filtered to the app's pack) above the runs table. Const-wired guards with
+  `DUMMY_DATA`. Verified by review (files + exports + wiring present in both apps); FE tsc
+  needs `npm install` (node_modules incomplete).
+- **M3 status: B + A + C + D all implemented** (backend offline-verified; FE by review).
+  To run live: rebuild the stack (`up -d --build`), set an LLM key (+ optional
+  `NANGO_SECRET_KEY`), `POST /api/workflows/packs/seed`, then use the FEs. FE Connect button
+  (Nango SDK) snippet + `npm i @nangohq/frontend` still to be dropped into the Connectors
+  page. Temporal-wrapping of the pack executor + live Nango response-mapping + real OCR
+  remain as hardening follow-ups.
+
+### Change Log — FE Nango Connect button wired (Acc-Wired + Const-wired)
+- Wired the `@nangohq/frontend` Connect flow into the Connectors page of both FEs
+  (`src/routes/app.connectors.tsx`). Added `import Nango from "@nangohq/frontend"` and a
+  module-level `handleConnect(key, queryClient)`: calls `api.getConnectSession(key)`,
+  short-circuits to `configureConnector({enabled:true})` for the sandbox / no-token case
+  (backend without `NANGO_SECRET_KEY`), otherwise `new Nango().openConnectUI({ sessionToken })`,
+  extracts `connectionId` (three fallback paths), then `configureConnector({enabled:true,
+  config:{connection_id}})`; invalidates `["connectors"]` in both paths.
+- The existing enable/disable toggle now branches: not-enabled → `handleConnect`,
+  enabled → keep disable. Wrapped in try/catch/finally so `pending` always resets; errors
+  surface via `toast.error` (Const-wired) / `console.error` (Acc-Wired, no toast import).
+  Button JSX/layout/copy untouched.
+- **Requires `npm i @nangohq/frontend`** in each FE before build. `openConnectUI` call/return
+  shape is version-sensitive (`result` typed `any`, flagged with a NOTE comment) — reconfirm
+  against the installed SDK version at runtime. Verified by review only; FE tsc needs
+  `npm install` (node_modules incomplete).
+
+### 2026-07-14 — Assistant can recognize + start user-authored workflows by name
+- **What:** The chat assistant can now classify a message onto a user-built workflow (built
+  in the visual builder, stored per-tenant in the workflows service, `pack_key == "custom"`)
+  and start it with the CORRECT pack_key. Previously the classifier only knew workflow keys
+  from the industry config (`ws.workspace.copilots or ws.workflow_packs`), so user flows were
+  invisible and any run defaulted to `ws.workflow_packs[0]`.
+  - `services/orchestrator/.../assistant.py`: `classify_intent()` gained an optional
+    `extra_workflow_keys: list[str] | None = None`. These are merged into the known-keys list
+    used to build the classifier system prompt (config keys first, then extras; de-duped,
+    order preserved). Classification contract unchanged (`IntentResult` still = intent/
+    workflow/action). `workflow_keys` is now a copy so the industry config list isn't mutated.
+  - `services/orchestrator/.../main.py`: new `_workflow_definitions(request)` GETs
+    `/packs/definitions` from the workflows service (same signed-`INTERNAL_HEADER`-forwarding
+    httpx pattern as `_workflows`/`_start_pack_workflow`); returns `[]` on ANY failure
+    (`httpx.HTTPError`/bad JSON) with a `log.warning` — a definitions-lookup error never
+    breaks chat. New `_workflow_pack_map(definitions)` builds `(extra_workflow_keys,
+    {workflow_key: pack_key})` from ALL definitions (seeded + user). `/chat` fetches
+    definitions before classifying, passes `extra_workflow_keys` to `classify_intent`, and
+    passes the pack map into `_gather_backend_data`. In the WORKFLOW_EXECUTION branch the
+    pack is now sourced as `pack_by_key.get(wf)` (user flow → "custom", seeded → real pack),
+    falling back to the workspace default pack (`ws.workflow_packs[0]`) only when the key
+    isn't in the map. `/chat/stream` unchanged — it neither classifies nor starts runs.
+- **Tests (NEW `services/orchestrator/tests/`):** `test_assistant.py` (5 tests) + a
+  `conftest.py` that puts `services/orchestrator/src` on `sys.path` (only `ai_os_shared` is
+  installed editable in the ai-backend venv). Covers: extra keys appear in the classifier
+  prompt; extras de-duped/order-preserved; `_workflow_pack_map` shape (incl. user flow →
+  "custom", missing pack_key/workflow_key handling); a user workflow key starts with
+  pack_key="custom" via the mocked `_start_pack_workflow`; and fallback to the default pack
+  when a key is unmapped. `_gather_backend_data` is driven directly at the seam (full `/chat`
+  needs live DB + signed context + LLM).
+- **Verified:** `uvx ruff check services/orchestrator` clean; `ast.parse` OK on both edited
+  files; `pytest services/orchestrator/tests` → **5 passed** (ran with the workspace parent
+  `.venv`, which has all members installed editable; pytest+pytest-asyncio were pip-installed
+  into it for the run). Only warnings = pre-existing FastAPI `on_event` deprecation.
+- **Assumption:** the workflows `/packs/definitions` response includes `pack_key` +
+  `workflow_key` per spec (the `source` field isn't consumed here — including ALL keys, per
+  the task, also lets seeded flows resolve their real pack). Not run live end-to-end (needs
+  the stack + an LLM key); the LLM-dependent classification path is exercised via a fake LLM.
+- **Next:** verify live once the visual builder persists user flows with `pack_key="custom"`
+  and `/packs/definitions` returns them.
+
+### Change Log — User-authored workflows + connector entitlements (backend slice) — ADR-0019
+Backend for the n8n-style visual builder + per-tenant connector access. Builder UI (React
+Flow in Acc-Wired) is the NEXT slice — this turn is backend only, per the user's "backend
+first" choice. Topology decision: **linear pipeline + branches** (matches the ordered-steps +
+`when`-guard engine; no DAG rewrite). Entitlement decision: **opt-in allowlist** (a tenant
+sees only granted connectors; existing tenants grandfathered via an app endpoint).
+
+- **Migration `0004_workflow_authoring_and_entitlements.py`** (revises 0003): adds `source`
+  (default 'seed'), `created_by`, `updated_at` to `workflow_definitions`; creates RLS-scoped
+  `connector_entitlements(tenant_id, connector_key, allowed, created_by, created_at,
+  updated_at)` unique `(tenant_id, connector_key)`. Schema-only — it does NOT seed entitlement
+  rows (these tables FORCE RLS; a migration has no tenant context so the INSERT WITH CHECK
+  would fail). Grandfathering is an app endpoint (below).
+- **Workflows service — user flows persist in the DB, run by the same engine.** User flows use
+  the reserved pack key **`custom`** + `source='user'`. `pack_runtime.load_definition` is now
+  `async(ctx, pack_key, workflow_key)` and resolves **DB-first, disk-fallback** (both callers
+  `start_run`/`resume_run` updated). `list_definitions` returns seeded (disk, source='seed')
+  + user (DB, source='user') in one spec list, each with latest run status. New CRUD
+  `create/update/delete_definition` (upsert keyed by definition `key`; update/delete guarded
+  to `source='user'` so seed flows can't be mutated). New endpoints `POST /packs/definitions`,
+  `PUT /packs/definitions/{key}`, `DELETE /packs/definitions/{key}`. Also fixed a latent
+  missing `validate_definition` import. Create body contract for the FE builder:
+  `{"definition": {<full WorkflowDefinition JSON>}}` — `pack` forced to `custom`, `key`
+  required = the workflow id; run via existing `POST /packs/{key}/run` body `{"pack_key":
+  "custom","inputs":{}}`. (Note: invalid-definition errors return 422 via the repo
+  `ValidationError`, not 400.)
+- **Connectors service — opt-in entitlements.** `_entitled_keys(ctx)` reads
+  `connector_entitlements`. `GET /connectors` filters to entitled by default; `?all=true`
+  returns the full catalogue each with an `entitled` flag (for the builder palette). `invoke`
+  + `configure`(enable) enforce entitlement; `echo` (reference) is always allowed. New
+  `GET /connectors/entitlements`, `PUT /connectors/entitlements/{key}` `{allowed}`, and
+  `POST /connectors/entitlements/grant-defaults` (grants all non-reference connectors — the
+  one-time grandfather). Management endpoints reuse the `configure` authz action (no Cerbos
+  change); strict admin-only is a follow-up.
+- **Assistant** (logged in the entry below): classifies against the tenant's saved flows and
+  starts them with the right `pack_key`.
+- **Verified:** `uvx ruff check services/connectors services/workflows services/orchestrator`
+  → all clean; `ast.parse` OK on every edited file; grep confirms both `load_definition`
+  callers updated. Tests: connectors **8 passed**; workflows **5 passed, 4 skipped** (DB tests
+  skip until 0004 is applied — the CRUD SQL was separately exercised against real Postgres in
+  a rolled-back txn, incl. the seed-guard); orchestrator **5 passed**. DB-backed paths + live
+  LLM not exercised (needs the running stack).
+- **Activation (must run to use it):** 1) `alembic upgrade head` (0004); 2) per tenant once,
+  `POST /api/connectors/connectors/entitlements/grant-defaults` — WITHOUT this, opt-in means
+  existing tenants suddenly see NO connectors (echo excepted); 3) `POST /api/workflows/packs/
+  seed` as before. New tenants start with no entitlements by design.
+- **Next:** the React Flow (`@xyflow/react`) builder in Acc-Wired — connector palette
+  (`GET /connectors?all=true`, entitled-only or flagged), step nodes, drag/connect →
+  serialize to the linear+branch `WorkflowDefinition` → `POST /packs/definitions`; list user
+  flows in the Workflows tab; then port to Const-wired. See ADR-0019.
+
+### Change Log — Visual workflow builder in Acc-Wired (FE) + 2 backend adds — ADR-0019
+The React Flow (`@xyflow/react`) n8n-style builder, wired to the backend from the previous
+slice. Users pick entitled connectors + step types, wire a canvas, name it, Save → it
+serializes to a runnable `WorkflowDefinition` and POSTs to `/packs/definitions`. The flow
+then runs via the same engine and the assistant can start it by name.
+
+- **Two small backend additions (workflows service):**
+  - `step_handlers.ai_action` now accepts an **inline `prompt_text`** (falls back to the
+    file-based `prompt` for seeded packs). Builder AI steps have no prompts dir on disk under
+    pack `custom`, so inline is required for them to run.
+  - `pack_runtime.get_full_definition(ctx, workflow_key, pack_key='custom')` + endpoint
+    `GET /packs/definitions/{workflow_key}` — returns the FULL stored definition JSON (with
+    per-step config), needed to EDIT a flow (the graph-spec list carries only id/type/name).
+    ruff clean; AST OK; workflows tests still 5 passed / 4 skipped.
+- **Acc-Wired FE (`C:\...\Acc-Wired`):**
+  - `package.json`: added `@xyflow/react ^12.3.0` and the previously-undeclared
+    `@nangohq/frontend ^0.60.0` (confirm exact version on install).
+  - `src/api/client.ts`: `ConnectorItem.entitled?`, `WorkflowDefinitionSpec.source?`, and
+    fns `listConnectorCatalog` (`GET /connectors?all=true`), `createWorkflowDefinition`,
+    `updateWorkflowDefinition`, `deleteWorkflowDefinition`, `getWorkflowDefinition` (full
+    JSON for edit), `startWorkflow`. New hooks `useConnectorCatalog`,
+    `useSaveWorkflowDefinition` (POST new / PUT when `existingKey`), `useDeleteWorkflowDefinition`,
+    `useStartWorkflow`; re-exported via `src/api/index.ts`.
+  - `src/components/workflow/builder/`: `serialize.ts` (pure `serialize`/`deserialize` —
+    DFS-orders the canvas into the engine's ordered step list, derives branch `when` guards
+    stopping at merge points, maps friendly config → exact engine config per step type),
+    `WorkflowBuilder.tsx` (ReactFlowProvider canvas + entitled-connector palette + config
+    panel + Save/Update), `nodes.tsx`, `config-panel.tsx`.
+  - Routes: `app.workflows.tsx` → bare `<Outlet/>` layout; `app.workflows.index.tsx` = the
+    list page (adds a **Create workflow** button + a **My workflows** section listing
+    `source==='user'` flows with Run/Edit/Delete); `app.workflows.builder.tsx` =
+    `/app/workflows/builder` (reads `?key=` → fetches the full definition → `deserialize` for
+    edit). Mounted `<Toaster/>` in `app.tsx` (it was never mounted, so `toast()` was a no-op).
+- **Serialize→engine contract (what the builder emits):** `connector.call` →
+  `{connector, tool, arguments:{endpoint,query?,body?}}`; `ai.action` → `{prompt_text,
+  output?, model?}`; `notify` → `{connector, tool:"send", arguments}`; `approval` → `{}` +
+  an `approvals[]` gate; `branch` → `{condition, on_true:{<id>_t:true}, on_false:{<id>_f:true}}`
+  with downstream steps guarded by `when: "{{ steps.<id>.out.<flag> }}"`. `pack` forced to
+  `custom`, `key` = slug(name).
+- **Verified:** backend ruff/AST/tests as above. **FE NOT compiled** — node_modules is
+  incomplete (can't run tsc). To run: `cd Acc-Wired && npm install && npm run dev` (the
+  TanStack `routeTree.gen.ts` regenerates on dev — until then the new routes 404 and the typed
+  `<Link>`s type-error). Unverified-by-me: exact `@xyflow/react` v12 API names
+  (`screenToFlowPosition`, `NodeProps` data typing), `@nangohq/frontend` version.
+- **Activation (full feature, in order):** 1) `alembic upgrade head` (migration 0004);
+  2) per tenant once `POST /api/connectors/connectors/entitlements/grant-defaults` (else opt-in
+  hides all connectors → empty builder palette); 3) `POST /api/workflows/packs/seed`;
+  4) `cd Acc-Wired && npm install && npm run dev`.
+- **Next:** port the builder to **Const-wired** (same files); optionally consolidate the
+  duplicated `WorkflowDefinitionSpec` type (client.ts vs WorkflowFlow.tsx); harden entitlement
+  management to admin-only. See ADR-0019.
+
+### Change Log — Const-wired builder port + de-blue theme + demo entitlement seeding + docs
+Extends the ADR-0019 builder to the Construction FE, fixes the post-login theme, and makes
+the feature testable with a single `up --build` (no token dance).
+
+- **Demo entitlement seeding (`deploy/seed/seed.py`):** the seed job now grants the demo
+  tenant its default connector entitlements (nango.google-mail/sheet/drive/quickbooks,
+  microsoft-graph, composio) after registering the tenant — uses
+  `set_config('app.tenant_id', org_id, true)` so the RLS WITH CHECK on the FORCE-RLS
+  `connector_entitlements` table passes. run.sh already runs `alembic upgrade head` (→ 0004)
+  before seed.py. Net: after `up -d --build`, the demo tenant's Connector Hub + builder
+  palette are populated automatically (opt-in still applies to NEW non-demo tenants). ruff +
+  AST clean.
+- **Const-wired FE (`C:\...\Const-wired`) — builder ported (mirrors Acc-Wired):** copied
+  `src/components/workflow/builder/{serialize,nodes,config-panel,WorkflowBuilder}` verbatim;
+  added the 6 client fns (`listConnectorCatalog`, create/update/delete/getWorkflowDefinition,
+  startWorkflow) + `ConnectorItem.entitled?` + `WorkflowDefinitionSpec.source?` to
+  `client.ts`; added hooks (`useConnectorCatalog`, `useSaveWorkflowDefinition`,
+  `useDeleteWorkflowDefinition`, `useStartWorkflow`) + barrel exports; split the route into
+  `app.workflows.tsx` (Outlet) + `app.workflows.index.tsx` (list + Create + My workflows,
+  **templates filter kept as `pack_key === "construction"`**) + `app.workflows.builder.tsx`;
+  added deps `@xyflow/react ^12.3.0` + `@nangohq/frontend ^0.60.0` (the latter was imported by
+  app.connectors.tsx but never declared — build hazard now fixed). Toaster NOT re-mounted
+  (global in `__root.tsx`).
+- **Const-wired post-login theme de-blued (`src/styles.css`):** only the `.app-shell.dark`
+  block changed — `--primary`/`--primary-2`/`--accent`/`--accent-foreground`/`--ring` swapped
+  from the old blue (hue 264/276) to the `.landing-root.dark` construction safety-orange
+  (`--primary: oklch(0.68 0.17 45)` etc.). Light shell + both landing modes were already
+  orange; `.landing-root` untouched. Stale "blue accent" comments corrected. The blue only
+  showed in dark mode (theme seeded from OS preference); it now matches the landing page.
+- **Docs:** `Acc-Wired/FRONTEND.md` (builder section + Connect-flow + Workflows/Connectors
+  rows), `Const-wired/FRONTEND.md` (builder section + theming note), `RUNNING.md` (new
+  "Testing the workflow builder + connector entitlements" section answering rebuild-vs-npm and
+  the auto-grant), and this file. ADR-0019 covers the design.
+- **Verified:** backend seed.py ruff/AST clean; Const-wired theme values + routes + client fns
+  confirmed present via grep. **FEs NOT compiled** (node_modules incomplete) — run
+  `npm install && npm run dev` in each (routeTree.gen.ts regenerates on dev). Full activation:
+  `docker compose … up -d --build` (applies 0004 + seeds entitlements) → `npm install && npm
+  run dev` per FE.
+- **Next / not done:** consolidate the duplicated `WorkflowDefinitionSpec` type
+  (client.ts vs WorkflowFlow.tsx) in both FEs; harden connector-entitlement management to
+  admin-only (currently reuses the `configure` authz action); Temporal-wrap the pack executor
+  (ADR-0006); live LLM/DB/Nango paths need the running stack + keys. Commits still not made (C2).
+
+### Change Log — Entitlement management hardened to owner/admin-only
+Closed the ADR-0019 follow-up: connector-entitlement management is no longer available to any
+`configure`-capable role.
+- `services/connectors/src/connectors/main.py`: added `_require_admin(ctx)` — raises
+  `AuthorizationError` (403) unless `ctx.has_role(Role.OWNER, Role.ADMIN)`. Called at the top of
+  `PUT /connectors/entitlements/{key}` and `POST /connectors/entitlements/grant-defaults`
+  (in addition to the existing `check_ctx`). `GET /connectors/entitlements` stays open to any
+  member (read-only). In-code role gate — no Cerbos policy change.
+- Tests: the `env` fixture now binds `roles=[Role.OWNER]` (management tests need it); added
+  `test_entitlement_management_requires_admin` (a MEMBER gets 403 on set/grant-defaults but can
+  still list). **9 passed** (`uvx ruff check services/connectors` clean; ran via the workspace
+  `.venv`).
+- ADR-0019 updated (management is now owner/admin-only, not a follow-up).
+- Note for the demo: the `seed.py` grant runs as the seed process (not via the HTTP endpoint),
+  so this role gate doesn't affect auto-seeding; and the demo `owner@`/`admin@` users can manage
+  entitlements from the API, while `member@`/`viewer@` cannot.
+
 <!-- New agents: append your entry above this line. -->

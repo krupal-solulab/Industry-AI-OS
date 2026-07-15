@@ -249,8 +249,32 @@ def _quickbooks_sandbox(method: str, endpoint: str, args: dict) -> dict:
     return {}
 
 
+def _sheets_sandbox(method: str, endpoint: str, args: dict) -> dict:
+    """Google Sheets-shaped demo fixtures (read rows for dup-check; append a row)."""
+    if method == "GET":  # read existing invoice rows (duplicate-check source in demo mode)
+        return {"values": []}  # empty => not a duplicate
+    if method == "POST":  # append the invoice metadata row
+        return {"updates": {"updatedRange": "Invoices!A2:F2", "updatedRows": 1}, "saved": True}
+    return {}
+
+
+def _drive_sandbox(method: str, endpoint: str, args: dict) -> dict:
+    """Google Drive-shaped demo fixtures (upload/archive a file)."""
+    if method == "POST":
+        return {
+            "id": "drive-file-9001",
+            "name": "invoice-INV-1042.pdf",
+            "webViewLink": "https://drive.example/sandbox/INV-1042",
+        }
+    return {}
+
+
 def nango_connectors() -> list[NangoConnector]:
+    # Keys/provider match the tenant's Nango integration IDs (google-mail / google-sheet /
+    # google-drive). QuickBooks is registered for the future "accounting connector" branch.
     return [
-        NangoConnector("gmail", "Gmail (via Nango)", _gmail_sandbox),
+        NangoConnector("google-mail", "Gmail (via Nango)", _gmail_sandbox),
+        NangoConnector("google-sheet", "Google Sheets (via Nango)", _sheets_sandbox),
+        NangoConnector("google-drive", "Google Drive (via Nango)", _drive_sandbox),
         NangoConnector("quickbooks", "QuickBooks Online (via Nango)", _quickbooks_sandbox),
     ]

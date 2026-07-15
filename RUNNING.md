@@ -101,6 +101,44 @@ npm install
 npm run dev               # http://localhost:8080
 ```
 
+## Testing the workflow builder + connector entitlements (ADR-0019)
+
+**Do I need `docker compose … up -d --build` before `npm run dev`, or just `npm run dev`?**
+Because this feature changed **backend code + added migration `0004`**, you must rebuild the
+backend once. `npm run dev` alone is NOT enough — the frontend calls the gateway; the new
+builder/entitlement endpoints won't exist until the backend is rebuilt and the migration is
+applied. (On later days when only the FE changed, `npm run dev` alone is fine.)
+
+```bash
+# 1. Backend — rebuild (applies migration 0004 + seeds entitlements via the seed job)
+cd ai-backend
+docker compose -f deploy/docker-compose.yml --env-file .env up -d --build
+docker compose -f deploy/docker-compose.yml ps          # wait for services healthy + seed Exited (0)
+
+# 2. Frontend (Accounting)
+cd ../Acc-Wired
+npm install            # pulls @xyflow/react + @nangohq/frontend (new deps)
+npm run dev            # http://localhost:8080
+
+#    …or Construction
+cd ../Const-wired && npm install && npm run dev
+```
+
+What the rebuilt **`seed`** job now does automatically: `alembic upgrade head` (migration
+`0004` → `source` column + `connector_entitlements` table) **and** grants the demo tenant its
+default connector entitlements (`deploy/seed/seed.py`). So after `up --build`, the Connector
+Hub and the builder's connector palette are populated — no manual grant needed.
+
+Then, logged in: **Workflows → Create workflow** → drag connectors + step nodes, wire them,
+name it, **Save**. It appears under **My workflows** (Run / Edit / Delete), runs through the
+same engine, and the AI assistant can start it by name. Seeded packs still show as
+read-only **Workflow templates**.
+
+> New tenants (not the demo) start with **no** connector entitlements by design (opt-in). To
+> grant one: `PUT /api/connectors/connectors/entitlements/{key}` `{ "allowed": true }`, or all
+> at once `POST /api/connectors/connectors/entitlements/grant-defaults` (both require an
+> owner/admin token).
+
 ## Health check
 
 ```bash

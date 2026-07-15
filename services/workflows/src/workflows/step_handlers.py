@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable
 
-from ai_os_shared.workflow.engine import RunContext
+from ai_os_shared.workflow.engine import RunContext, is_truthy
 from ai_os_shared.workflow.schema import Step, StepType
 
 # Dependency callable signatures (implemented by the workflows service at runtime).
@@ -40,7 +40,11 @@ def build_handlers(
     wait_for_approval: ApprovalWaiter,
 ) -> dict[StepType, Callable]:
     async def ai_action(step: Step, cfg: dict, _ctx: RunContext) -> dict:
-        prompt_text = load_prompt(cfg["prompt"])
+        # Seeded packs reference a prompt file (`prompt`); builder-authored flows (pack
+        # 'custom' has no prompts dir on disk) carry the prompt inline via `prompt_text`.
+        prompt_text = cfg.get("prompt_text") or (
+            load_prompt(cfg["prompt"]) if cfg.get("prompt") else ""
+        )
         payload = cfg.get("context", cfg.get("input", ""))
         user = payload if isinstance(payload, str) else json.dumps(payload, default=str)
         answer = await llm_chat(
@@ -70,7 +74,24 @@ def build_handlers(
         # not exist yet; if raw text is supplied, pass it through.
         if "text" in cfg:
             return {"text": cfg["text"]}
-        return {"text": "", "status": "parse_pending", "files": cfg.get("files")}
+        if not cfg.get("files"):
+            return {"text": "", "status": "no_files"}
+        # SANDBOX: real OCR/extraction (Docling for digital PDFs; a Doc AI for scans) is
+        # a MILESTONE_3 add-on. Until then, return a clearly-labeled extracted invoice so
+        # the pack flows end to end. Never presented as a real extraction (`_sandbox`).
+        return {
+            "_sandbox": True,
+            "status": "sandbox_extracted",
+            "text": "Invoice INV-1042 — Acme Supplies — total 14,280.00 (tax 1,080.00)",
+            "vendor_name": "Acme Supplies",
+            "invoice_number": "INV-1042",
+            "subtotal": 13200.00,
+            "tax": 1080.00,
+            "total": 14280.00,
+            "line_items": [
+                {"description": "Widgets", "qty": 100, "unit_price": 132.0, "amount": 13200.0}
+            ],
+        }
 
     async def transform(step: Step, cfg: dict, _ctx: RunContext) -> dict:
         # The resolved config IS the transform output (pure data shaping via {{ }}).
@@ -84,6 +105,12 @@ def build_handlers(
     async def approval(step: Step, cfg: dict, _ctx: RunContext) -> dict:
         return await wait_for_approval(step, cfg)
 
+    async def branch(step: Step, cfg: dict, _ctx: RunContext) -> dict:
+        # A routing step: evaluate `condition` (already resolved by the engine) and emit
+        # the matching flag set. Downstream steps gate on those flags via `when`.
+        chosen = cfg.get("on_true") if is_truthy(cfg.get("condition")) else cfg.get("on_false")
+        return chosen if isinstance(chosen, dict) else {"value": chosen}
+
     return {
         StepType.AI_ACTION: ai_action,
         StepType.CONNECTOR_CALL: connector_call,
@@ -92,4 +119,5 @@ def build_handlers(
         StepType.TRANSFORM: transform,
         StepType.NOTIFY: notify,
         StepType.APPROVAL: approval,
+        StepType.BRANCH: branch,
     }

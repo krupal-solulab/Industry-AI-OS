@@ -43,6 +43,7 @@ class Intent(str, Enum):
     WORKSPACE_QUESTION = "workspace_question"
     KNOWLEDGE_SEARCH = "knowledge_search"
     WORKFLOW_EXECUTION = "workflow_execution"
+    CONNECTOR_ACTION = "connector_action"  # "check my recent mails", "list my files"
     DOCUMENT_ANALYSIS = "document_analysis"
     WORKFLOW_STATUS = "workflow_status"
     APPROVAL_STATUS = "approval_status"
@@ -50,9 +51,41 @@ class Intent(str, Enum):
 
 
 @dataclass
+class ConnectorAction:
+    """A curated, safe connector 'quick action' the assistant may run on request. This is
+    a closed allow-list per industry — the assistant never picks arbitrary endpoints."""
+
+    key: str
+    label: str
+    connector: str  # Connector Hub key, e.g. "nango.google-mail"
+    method: str  # HTTP method (the connector's "tool")
+    endpoint: str  # provider endpoint proxied by Nango
+
+
+# Per-industry allow-list of connector quick-actions ("connector tasks at your fingertips").
+_MAIL = ("recent_mail", "recent emails", "nango.google-mail", "GET", "/messages")
+_FILES = ("recent_files", "recent files", "nango.google-drive", "GET", "/drive/v3/files")
+WORKSPACE_ACTIONS: dict[str, list[ConnectorAction]] = {
+    "accounting": [ConnectorAction(*_MAIL), ConnectorAction(*_FILES)],
+    "construction": [ConnectorAction(*_MAIL), ConnectorAction(*_FILES)],
+}
+
+
+def actions_for(industry: str | None) -> list[ConnectorAction]:
+    return WORKSPACE_ACTIONS.get(industry or "", [])
+
+
+def find_action(industry: str | None, key: str | None) -> ConnectorAction | None:
+    if not key:
+        return None
+    return next((a for a in actions_for(industry) if a.key == key), None)
+
+
+@dataclass
 class IntentResult:
     intent: Intent
     workflow: str | None = None  # a workspace workflow/copilot key, if one was named
+    action: str | None = None  # a connector-action key, if the user asked for one
 
 
 # A stable lead-in so we can detect whether the previous assistant turn already
@@ -142,27 +175,44 @@ def build_system_prompt(ws: Industry | None, mode: Mode) -> str:
 
 
 async def classify_intent(
-    message: str, history: list[dict], ws: Industry | None, model: str | None
+    message: str,
+    history: list[dict],
+    ws: Industry | None,
+    model: str | None,
+    extra_workflow_keys: list[str] | None = None,
 ) -> IntentResult:
     """LLM intent classification returning strict JSON. On any parsing/LLM failure we
-    fall back to GENERAL_QUESTION so chat never hard-fails on classification."""
-    workflow_keys = (ws.workspace.copilots or ws.workflow_packs) if ws else []
+    fall back to GENERAL_QUESTION so chat never hard-fails on classification.
+
+    `extra_workflow_keys` are workflow keys not present in the industry config — e.g.
+    user-authored flows stored per-tenant in the workflows service. They are appended to
+    the config keys (config first, then extras; de-duped, order preserved) so the LLM can
+    classify a message onto a user-built workflow key."""
+    workflow_keys = list(ws.workspace.copilots or ws.workflow_packs) if ws else []
+    for key in extra_workflow_keys or []:
+        if key and key not in workflow_keys:
+            workflow_keys.append(key)
+    action_keys = [a.key for a in actions_for(ws.key if ws else None)]
     recent = history[-6:]
     convo = "\n".join(f"{m['role']}: {m['content']}" for m in recent)
     sys = (
         "You are an intent classifier for an industry-workspace AI assistant. "
-        "Classify the user's LATEST message into exactly one intent and, if they refer "
-        "to a specific workspace workflow, its key.\n"
+        "Classify the user's LATEST message into exactly one intent; if they name a "
+        "specific workspace workflow return its key; if they ask to run a connector quick-"
+        "action return its key.\n"
         f"Intents: {', '.join(i.value for i in Intent)}.\n"
-        f"Known workflow keys for this workspace: {workflow_keys or 'none'}.\n"
-        "Guidance: 'run/verify/create/generate/review <thing>' => workflow_execution; "
+        f"Known workflow keys: {workflow_keys or 'none'}.\n"
+        f"Known connector-action keys: {action_keys or 'none'}.\n"
+        "Guidance: 'run/verify/create/generate/review <workflow>' => workflow_execution; "
+        "'check/show my (recent) mail/email/files/drive' => connector_action; "
         "'what's the status of / did it finish' => workflow_status; "
         "'is it approved / pending approval' => approval_status; "
         "'find / search / what do our docs say' => knowledge_search; "
         "'analyze/summarize this document/file' => document_analysis; "
         "questions about what this workspace does => workspace_question; "
         "greetings/small talk => general_conversation; anything else => general_question.\n"
-        'Respond with ONLY compact JSON: {"intent": "<intent>", "workflow": "<key or null>"}.'
+        'Respond with ONLY compact JSON: '
+        '{"intent": "<intent>", "workflow": "<key or null>", "action": "<key or null>"}.'
     )
     prompt = f"Recent conversation:\n{convo}\n\nLATEST user message:\n{message}"
     try:
@@ -173,9 +223,13 @@ async def classify_intent(
         )
         data = _extract_json(raw)
         intent = Intent(str(data.get("intent", "")).strip().lower())
-        wf = data.get("workflow")
-        wf = str(wf).strip() if wf and str(wf).lower() not in {"null", "none", ""} else None
-        return IntentResult(intent=intent, workflow=wf)
+
+        def _clean(v: object) -> str | None:
+            return str(v).strip() if v and str(v).lower() not in {"null", "none", ""} else None
+
+        return IntentResult(
+            intent=intent, workflow=_clean(data.get("workflow")), action=_clean(data.get("action"))
+        )
     except Exception:
         return IntentResult(intent=Intent.GENERAL_QUESTION)
 

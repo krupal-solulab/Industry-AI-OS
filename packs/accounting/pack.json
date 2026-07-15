@@ -16,7 +16,7 @@
     { "persona": "accountant", "roles": ["owner", "admin", "member"] },
     { "persona": "ap_clerk", "roles": ["owner", "admin", "member"] }
   ],
-  "connectors": ["nango.gmail", "nango.quickbooks"],
+  "connectors": ["nango.google-mail", "nango.google-sheet", "nango.google-drive", "nango.quickbooks"],
   "workflows": ["invoice_verification"],
   "workspace": {
     "display_name": "Accounting AI OS",

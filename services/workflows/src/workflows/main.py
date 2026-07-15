@@ -7,19 +7,22 @@ import contextlib
 from collections.abc import AsyncIterator
 
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import text
 
 from ai_os_shared.app import create_app
 from ai_os_shared.audit import emit
+from ai_os_shared.auth import INTERNAL_HEADER
 from ai_os_shared.authz import check_ctx
 from ai_os_shared.db import get_engine, new_uuid, tenant_session
-from ai_os_shared.errors import NotFoundError, UpstreamError
+from ai_os_shared.errors import NotFoundError, UpstreamError, ValidationError
 from ai_os_shared.health import HealthRegistry
 from ai_os_shared.settings import get_settings
 from ai_os_shared.tenant_context import require_context
 from ai_os_shared.types import Resource
+from workflows import pack_runtime
 from workflows.shared_defs import Decision, ReviewInput
 from workflows.worker import build_worker, get_client
 from workflows.workflow import DocumentReviewApproval
@@ -199,3 +202,165 @@ async def get_workflow(workflow_id: str) -> dict:
         "created_at": row.created_at.isoformat(),
         "updated_at": row.updated_at.isoformat(),
     }
+
+
+# ---------------------------------------------------------------- Pack workflows
+# Generic runtime for the Workflow Pack Framework: run any seeded pack workflow,
+# check its run, and approve/reject the human-in-the-loop pause. Reuses the generic
+# engine + step handlers (see pack_runtime); the legacy document-review endpoints above
+# remain for back-compat.
+class RunPack(BaseModel):
+    pack_key: str
+    inputs: dict = {}
+
+
+class CreateDefinition(BaseModel):
+    # The full workflow definition authored in the visual builder (11-part template).
+    # `pack` is forced to the reserved 'custom' key server-side; `key` is required and
+    # becomes the workflow_key. Validated against the WorkflowDefinition schema.
+    definition: dict
+
+
+@app.post("/packs/{workflow_key}/run", status_code=201, tags=["workflows"])
+async def run_pack_workflow(workflow_key: str, body: RunPack, request: Request) -> dict:
+    ctx = require_context()
+    await check_ctx(ctx, "start", Resource(kind="workflow", id="*", tenant_id=ctx.tenant_id))
+    run_id = f"run-{ctx.tenant_id}-{new_uuid()}"
+    header = request.headers.get(INTERNAL_HEADER)
+    try:
+        result = await pack_runtime.start_run(
+            ctx, header, run_id, body.pack_key, workflow_key, body.inputs
+        )
+    except KeyError as exc:
+        raise NotFoundError(str(exc)) from exc
+    await emit(
+        "workflow.start",
+        resource_kind="workflow",
+        resource_id=run_id,
+        after={"pack": body.pack_key, "workflow": workflow_key},
+    )
+    return result
+
+
+@app.get("/packs/definitions", tags=["workflows"])
+async def list_definitions() -> list[dict]:
+    """Seeded workflow definitions as graph specs (steps + connectors + latest status) —
+    powers the FE flow-graph visualization."""
+    ctx = require_context()
+    await check_ctx(ctx, "list", Resource(kind="workflow", id="*", tenant_id=ctx.tenant_id))
+    return await pack_runtime.list_definitions(ctx)
+
+
+@app.get("/packs/definitions/{workflow_key}", tags=["workflows"])
+async def get_definition(workflow_key: str, pack_key: str = "custom") -> dict:
+    """The FULL stored WorkflowDefinition JSON (with per-step config) — powers editing a
+    flow in the visual builder, where the graph-spec list (id/type/name only) is not
+    enough. Defaults to the reserved 'custom' pack (user flows); pass ?pack_key= to read a
+    seeded flow. 404 if the flow doesn't exist for this tenant."""
+    ctx = require_context()
+    await check_ctx(
+        ctx, "read", Resource(kind="workflow", id=workflow_key, tenant_id=ctx.tenant_id)
+    )
+    try:
+        return await pack_runtime.get_full_definition(ctx, workflow_key, pack_key)
+    except KeyError as exc:
+        raise NotFoundError(str(exc)) from exc
+
+
+@app.post("/packs/definitions", status_code=201, tags=["workflows"])
+async def create_definition(body: CreateDefinition) -> dict:
+    """Persist a user-authored (visual-builder) flow under the reserved 'custom' pack.
+    The definition is validated against the WorkflowDefinition schema; an invalid body
+    (bad schema or missing `key`) is a 422. Returns the flow's graph spec."""
+    ctx = require_context()
+    await check_ctx(ctx, "start", Resource(kind="workflow", id="*", tenant_id=ctx.tenant_id))
+    try:
+        spec = await pack_runtime.create_definition(ctx, body.definition)
+    except (ValueError, PydanticValidationError) as exc:
+        raise ValidationError(f"Invalid workflow definition: {exc}") from exc
+    await emit(
+        "workflow.define",
+        resource_kind="workflow",
+        resource_id=spec["workflow_key"],
+        after={"pack": spec["pack_key"], "workflow": spec["workflow_key"], "source": "user"},
+    )
+    return spec
+
+
+@app.put("/packs/definitions/{workflow_key}", tags=["workflows"])
+async def update_definition(workflow_key: str, body: CreateDefinition) -> dict:
+    """Replace an existing user-authored flow. 404 if no such user flow; a seed flow
+    can never be mutated (it has no source='user' row to match)."""
+    ctx = require_context()
+    await check_ctx(ctx, "start", Resource(kind="workflow", id="*", tenant_id=ctx.tenant_id))
+    try:
+        spec = await pack_runtime.update_definition(ctx, workflow_key, body.definition)
+    except KeyError as exc:
+        raise NotFoundError(str(exc)) from exc
+    except (ValueError, PydanticValidationError) as exc:
+        raise ValidationError(f"Invalid workflow definition: {exc}") from exc
+    await emit(
+        "workflow.update",
+        resource_kind="workflow",
+        resource_id=workflow_key,
+        after={"pack": spec["pack_key"], "workflow": workflow_key, "source": "user"},
+    )
+    return spec
+
+
+@app.delete("/packs/definitions/{workflow_key}", tags=["workflows"])
+async def delete_definition(workflow_key: str) -> dict:
+    """Delete a user-authored flow. 404 if no such user flow; seed flows are protected."""
+    ctx = require_context()
+    await check_ctx(ctx, "start", Resource(kind="workflow", id="*", tenant_id=ctx.tenant_id))
+    try:
+        await pack_runtime.delete_definition(ctx, workflow_key)
+    except KeyError as exc:
+        raise NotFoundError(str(exc)) from exc
+    await emit("workflow.delete", resource_kind="workflow", resource_id=workflow_key)
+    return {"status": "deleted", "workflow_key": workflow_key}
+
+
+@app.get("/packs/runs/{run_id}", tags=["workflows"])
+async def get_pack_run(run_id: str) -> dict:
+    ctx = require_context()
+    await check_ctx(ctx, "read", Resource(kind="workflow", id=run_id, tenant_id=ctx.tenant_id))
+    row = await pack_runtime.get_run(ctx, run_id)
+    if not row:
+        raise NotFoundError("Run not found")
+    row["created_at"] = row["created_at"].isoformat()
+    row["updated_at"] = row["updated_at"].isoformat()
+    return row
+
+
+async def _decide_run(run_id: str, request: Request, approved: bool, comment: str) -> dict:
+    ctx = require_context()
+    action = "approve" if approved else "reject"
+    await check_ctx(ctx, action, Resource(kind="workflow", id=run_id, tenant_id=ctx.tenant_id))
+    header = request.headers.get(INTERNAL_HEADER)
+    try:
+        result = await pack_runtime.resume_run(ctx, header, run_id, approved, ctx.user_id, comment)
+    except KeyError as exc:
+        raise NotFoundError(str(exc)) from exc
+    await emit(f"workflow.{action}", resource_kind="workflow", resource_id=run_id)
+    return result
+
+
+@app.post("/packs/runs/{run_id}/approve", tags=["workflows"])
+async def approve_run(run_id: str, body: DecisionBody, request: Request) -> dict:
+    return await _decide_run(run_id, request, True, body.comment)
+
+
+@app.post("/packs/runs/{run_id}/reject", tags=["workflows"])
+async def reject_run(run_id: str, body: DecisionBody, request: Request) -> dict:
+    return await _decide_run(run_id, request, False, body.comment)
+
+
+@app.post("/packs/seed", tags=["workflows"])
+async def seed_packs() -> dict:
+    """Seed this tenant's pack registry (workflow_packs/workflow_definitions) from the
+    repo pack files. Idempotent — safe to call repeatedly."""
+    ctx = require_context()
+    await check_ctx(ctx, "start", Resource(kind="workflow", id="*", tenant_id=ctx.tenant_id))
+    count = await pack_runtime.seed_tenant_packs(ctx)
+    return {"status": "seeded", "definitions": count}

@@ -24,6 +24,15 @@ class EngineError(Exception):
     pass
 
 
+def is_truthy(value: object) -> bool:
+    """Truthiness for a resolved `when`/`branch` condition. Treats the common 'falsy'
+    strings ('', 'false', '0', 'no', 'none', 'null') as False so definitions can carry
+    string flags safely; otherwise standard Python truthiness."""
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "false", "0", "no", "none", "null")
+    return bool(value)
+
+
 class PendingApproval(Exception):
     """A handler may raise this to suspend a run until a human decision arrives.
 
@@ -65,18 +74,39 @@ class WorkflowEngine:
         if self.on_event:
             self.on_event(kind, step, data)
 
-    async def run(self, definition: WorkflowDefinition, inputs: dict | None = None) -> dict:
-        ctx = RunContext(inputs)
+    async def run(
+        self,
+        definition: WorkflowDefinition,
+        inputs: dict | None = None,
+        ctx: RunContext | None = None,
+    ) -> dict:
+        """Execute a definition's steps in order.
+
+        Pass an existing `ctx` to RESUME: steps whose output is already present are
+        skipped, so a durable executor can re-run after a suspend (e.g. a handler raised
+        `PendingApproval` at an approval step) and continue where it left off. On suspend
+        the passed-in `ctx` retains every completed step (it is mutated in place), so the
+        caller can persist it and resume later by passing the same `ctx` back.
+        """
+        ctx = ctx if ctx is not None else RunContext(inputs)
         for step in definition.steps:
+            key = step.out or step.id
+            if key in ctx.steps:
+                continue  # resume: this step already ran
+            # Conditional execution: skip a step whose `when` guard resolves falsy.
+            if step.when is not None and not is_truthy(resolve(step.when, ctx.as_dict())):
+                self._emit("step_skipped", step, None)
+                ctx.set_output(key, {"skipped": True})
+                continue
             handler = self.handlers.get(step.type)
             if handler is None:
                 raise EngineError(f"No handler registered for step type '{step.type.value}'")
             resolved = resolve(step.config, ctx.as_dict())
             self._emit("step_start", step, resolved)
-            output = await handler(step, resolved, ctx)
+            output = await handler(step, resolved, ctx)  # may raise PendingApproval
             if not isinstance(output, dict):
                 output = {"value": output}
-            ctx.set_output(step.out or step.id, output)
+            ctx.set_output(key, output)
             self._emit("step_complete", step, output)
 
         return {

@@ -62,6 +62,10 @@ class Step(BaseModel):
     config: dict = Field(default_factory=dict)
     # Optional friendly key for this step's output in the context (defaults to id).
     out: str | None = None
+    # Optional guard: a `{{ }}` expression; the step is SKIPPED when it resolves falsy.
+    # Enables branches — e.g. a `branch` step sets flags, then two connector steps each
+    # run only under `when: "{{ steps.route.out.use_quickbooks }}"` / `use_sheets`.
+    when: str | None = None
 
 
 class ApprovalGate(BaseModel):

@@ -26,6 +26,19 @@ KC_PASSWORD = os.environ.get("KEYCLOAK_ADMIN_PASSWORD", "admin")
 DEMO_SLUG = "demo"
 DEMO_NAME = "Demo Tenant"
 
+# The demo tenant's connector allowlist (opt-in entitlements, ADR-0019). Every non-
+# reference connector in the registry — grants the demo tenant (which all public signups
+# share, D10) access so the Connector Hub + workflow-builder palette aren't empty. `echo`
+# is a reference connector and is always usable, so it's omitted.
+DEFAULT_CONNECTORS = [
+    "nango.google-mail",
+    "nango.google-sheet",
+    "nango.google-drive",
+    "nango.quickbooks",
+    "microsoft-graph",
+    "composio",
+]
+
 
 def _keycloak_org_id() -> str | None:
     """Best-effort: resolve the demo Organization's id from Keycloak."""
@@ -55,6 +68,26 @@ def _keycloak_org_id() -> str | None:
     return None
 
 
+def _grant_default_entitlements(engine, tenant_id: str) -> None:
+    """Grandfather the demo tenant onto the default connector allowlist (opt-in
+    entitlements, ADR-0019). Sets `app.tenant_id` via set_config so the RLS WITH CHECK on
+    connector_entitlements passes (the table FORCEs row-level security). Idempotent."""
+    with engine.begin() as conn:
+        conn.execute(text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id})
+        for key in DEFAULT_CONNECTORS:
+            conn.execute(
+                text(
+                    """INSERT INTO connector_entitlements
+                           (tenant_id, connector_key, allowed, created_by)
+                       VALUES (:tid, :key, true, 'seed')
+                       ON CONFLICT (tenant_id, connector_key)
+                       DO UPDATE SET allowed = true, updated_at = now()"""
+                ),
+                {"tid": tenant_id, "key": key},
+            )
+    print(f"[seed] granted {len(DEFAULT_CONNECTORS)} connector entitlements to '{tenant_id}'")
+
+
 def main() -> None:
     org_id = _keycloak_org_id()
     print(f"[seed] demo organization id: {org_id}")
@@ -76,6 +109,12 @@ def main() -> None:
             },
         )
     print(f"[seed] tenant '{DEMO_SLUG}' registered with settings {settings}")
+
+    if org_id:
+        _grant_default_entitlements(engine, org_id)
+    else:
+        print("[seed] no org id — skipped connector entitlements")
+
     print("[seed] demo users (password 'Passw0rd!'):")
     for role in ("owner", "admin", "member", "viewer"):
         print(f"        {role}@demo.aios.local  [{role}]")
