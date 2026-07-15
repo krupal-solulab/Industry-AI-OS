@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 
 import httpx
 from pydantic import BaseModel
@@ -293,6 +294,143 @@ async def grant_default_entitlements() -> dict:
         after={"granted": keys},
     )
     return {"granted": keys, "count": len(keys)}
+
+
+# ------------------------------------------------------------ access requests
+# The "Pending Permissions" flow: a member of a RESTRICTED tenant requests a connector it
+# isn't entitled to; an owner/admin approves (which grants the entitlement) or rejects.
+class AccessRequestBody(BaseModel):
+    note: str = ""
+
+
+def _valid_uuid(value: str) -> None:
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        raise NotFoundError("Access request not found") from None
+
+
+@app.post("/connectors/{key}/request-access", tags=["connectors"])
+async def request_access(key: str, body: AccessRequestBody) -> dict:
+    """Request access to a connector the tenant isn't entitled to (creates a pending
+    request for an owner/admin to approve). No-op if a pending request already exists."""
+    ctx = require_context()
+    await check_ctx(ctx, "read", Resource(kind="connector", id=key, tenant_id=ctx.tenant_id))
+    connector = get_connector(key)
+    if not connector:
+        raise NotFoundError(f"Unknown connector: {key}")
+    restricted, allowed = await _entitlement_view(ctx)
+    if _is_entitled(connector.kind, key, restricted, allowed):
+        raise ValidationError(f"Connector '{key}' is already available to this tenant")
+    async with tenant_session(ctx) as s:
+        await s.execute(
+            text(
+                """INSERT INTO connector_access_requests
+                       (tenant_id, connector_key, requested_by, note)
+                   VALUES (:tid, :key, :by, :note)
+                   ON CONFLICT (tenant_id, connector_key) WHERE status = 'pending'
+                   DO NOTHING"""
+            ),
+            {"tid": ctx.tenant_id, "key": key, "by": ctx.user_id, "note": body.note or None},
+        )
+    await emit("connector.access_requested", resource_kind="connector", resource_id=key)
+    return {"connector_key": key, "status": "pending"}
+
+
+@app.get("/connectors/access-requests", tags=["connectors"])
+async def list_access_requests(status: str | None = None) -> list[dict]:
+    """This tenant's connector access requests (owner/admin use the pending ones to
+    approve/reject; members see the status of their own requests)."""
+    ctx = require_context()
+    await check_ctx(ctx, "list", Resource(kind="connector", id="*", tenant_id=ctx.tenant_id))
+    query = (
+        "SELECT id, connector_key, status, requested_by, note, decided_by, "
+        "created_at, decided_at FROM connector_access_requests WHERE tenant_id = :tid"
+    )
+    params: dict = {"tid": ctx.tenant_id}
+    if status:
+        query += " AND status = :status"
+        params["status"] = status
+    query += " ORDER BY created_at DESC"
+    async with tenant_session(ctx) as s:
+        rows = await s.execute(text(query), params)
+        return [
+            {
+                "id": str(r.id),
+                "connector_key": r.connector_key,
+                "status": r.status,
+                "requested_by": r.requested_by,
+                "note": r.note,
+                "decided_by": r.decided_by,
+                "created_at": r.created_at.isoformat(),
+                "decided_at": r.decided_at.isoformat() if r.decided_at else None,
+            }
+            for r in rows
+        ]
+
+
+@app.post("/connectors/access-requests/{request_id}/approve", tags=["connectors"])
+async def approve_access_request(request_id: str) -> dict:
+    """Approve a pending request → marks it approved AND grants the entitlement.
+    Owner/admin only."""
+    ctx = require_context()
+    _require_admin(ctx)
+    await check_ctx(ctx, "configure", Resource(kind="connector", id="*", tenant_id=ctx.tenant_id))
+    _valid_uuid(request_id)
+    async with tenant_session(ctx) as s:
+        row = (
+            await s.execute(
+                text(
+                    "SELECT connector_key FROM connector_access_requests "
+                    "WHERE id = CAST(:id AS uuid) AND status = 'pending'"
+                ),
+                {"id": request_id},
+            )
+        ).first()
+        if not row:
+            raise NotFoundError("Pending access request not found")
+        key = row.connector_key
+        await s.execute(
+            text(
+                "UPDATE connector_access_requests SET status = 'approved', "
+                "decided_by = :by, decided_at = now() WHERE id = CAST(:id AS uuid)"
+            ),
+            {"by": ctx.user_id, "id": request_id},
+        )
+        await s.execute(
+            text(
+                """INSERT INTO connector_entitlements
+                       (tenant_id, connector_key, allowed, created_by)
+                   VALUES (:tid, :key, true, :by)
+                   ON CONFLICT (tenant_id, connector_key)
+                   DO UPDATE SET allowed = true, created_by = :by, updated_at = now()"""
+            ),
+            {"tid": ctx.tenant_id, "key": key, "by": ctx.user_id},
+        )
+    await emit("connector.access_approved", resource_kind="connector", resource_id=key)
+    return {"id": request_id, "connector_key": key, "status": "approved"}
+
+
+@app.post("/connectors/access-requests/{request_id}/reject", tags=["connectors"])
+async def reject_access_request(request_id: str) -> dict:
+    """Reject a pending access request (no entitlement granted). Owner/admin only."""
+    ctx = require_context()
+    _require_admin(ctx)
+    await check_ctx(ctx, "configure", Resource(kind="connector", id="*", tenant_id=ctx.tenant_id))
+    _valid_uuid(request_id)
+    async with tenant_session(ctx) as s:
+        result = await s.execute(
+            text(
+                "UPDATE connector_access_requests SET status = 'rejected', "
+                "decided_by = :by, decided_at = now() "
+                "WHERE id = CAST(:id AS uuid) AND status = 'pending'"
+            ),
+            {"by": ctx.user_id, "id": request_id},
+        )
+    if result.rowcount == 0:
+        raise NotFoundError("Pending access request not found")
+    await emit("connector.access_rejected", resource_kind="connector", resource_id=request_id)
+    return {"id": request_id, "status": "rejected"}
 
 
 @app.post("/connectors/{key}/connect-session", tags=["connectors"])

@@ -10,6 +10,7 @@ the endpoints' SQL to keep the grant -> entitle -> invoke flow coherent.
 from __future__ import annotations
 
 import datetime as dt
+import uuid
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -25,16 +26,20 @@ NANGO_KEY = "nango.google-mail"
 
 
 class _Result:
-    """Minimal stand-in for a SQLAlchemy Result — just needs to be iterable."""
+    """Minimal stand-in for a SQLAlchemy Result — iterable, with all/first/rowcount."""
 
-    def __init__(self, rows: list) -> None:
+    def __init__(self, rows: list, rowcount: int | None = None) -> None:
         self._rows = rows
+        self.rowcount = rowcount if rowcount is not None else len(rows)
 
     def __iter__(self):
         return iter(self._rows)
 
     def all(self):
         return list(self._rows)
+
+    def first(self):
+        return self._rows[0] if self._rows else None
 
 
 class _FakeSession:
@@ -76,6 +81,43 @@ class _FakeSession:
         if "INSERT INTO connectors" in sql:
             s.connectors[params["key"]] = {"enabled": params["enabled"], "config": {}}
             return _Result([])
+        # ---- connector_access_requests ----
+        if "INSERT INTO connector_access_requests" in sql:
+            key = params["key"]
+            if any(r["connector_key"] == key and r["status"] == "pending"
+                   for r in s.requests.values()):
+                return _Result([])  # ON CONFLICT (pending) DO NOTHING
+            rid = str(uuid.uuid4())
+            s.requests[rid] = {
+                "id": rid, "connector_key": key, "status": "pending",
+                "requested_by": params.get("by"), "note": params.get("note"),
+                "decided_by": None,
+                "created_at": dt.datetime(2026, 7, 15, tzinfo=dt.UTC), "decided_at": None,
+            }
+            return _Result([])
+        if "SELECT id, connector_key, status, requested_by" in sql:
+            rows = list(s.requests.values())
+            if "AND status = :status" in sql:
+                rows = [r for r in rows if r["status"] == params.get("status")]
+            return _Result([SimpleNamespace(**r) for r in rows])
+        if "SELECT connector_key FROM connector_access_requests" in sql:
+            r = s.requests.get(params["id"])
+            if r and r["status"] == "pending":
+                return _Result([SimpleNamespace(connector_key=r["connector_key"])])
+            return _Result([])
+        if "SET status = 'approved'" in sql:
+            r = s.requests.get(params["id"])
+            if r:
+                r["status"] = "approved"
+                r["decided_by"] = params.get("by")
+            return _Result([], rowcount=1 if r else 0)
+        if "SET status = 'rejected'" in sql:
+            r = s.requests.get(params["id"])
+            if r and r["status"] == "pending":
+                r["status"] = "rejected"
+                r["decided_by"] = params.get("by")
+                return _Result([], rowcount=1)
+            return _Result([], rowcount=0)
         return _Result([])
 
 
@@ -83,6 +125,7 @@ class _Store:
     def __init__(self) -> None:
         self.entitlements: dict[str, dict] = {}
         self.connectors: dict[str, dict] = {}
+        self.requests: dict[str, dict] = {}
 
 
 @pytest.fixture
@@ -203,6 +246,58 @@ async def test_set_and_list_entitlements(env):
     assert row["allowed"] is True
     assert row["created_by"] == "u-1"
     assert isinstance(row["created_at"], str)  # isoformat serialization
+
+
+async def test_access_request_flow(env):
+    # Restrict the tenant (grant a different connector) so NANGO is off-allowlist.
+    await m.set_entitlement("composio", m.EntitlementBody(allowed=True))
+
+    # A member requests access to NANGO.
+    member = TenantContext(tenant_id="t-test", user_id="req-user", roles=[Role.MEMBER])
+    tok = set_context(member)
+    try:
+        res = await m.request_access(NANGO_KEY, m.AccessRequestBody(note="need mail"))
+        assert res["status"] == "pending"
+        # A second request is a no-op — still exactly one pending.
+        await m.request_access(NANGO_KEY, m.AccessRequestBody())
+        pending = [r for r in await m.list_access_requests(status="pending")
+                   if r["connector_key"] == NANGO_KEY]
+        assert len(pending) == 1
+    finally:
+        reset_context(tok)
+
+    # Owner approves -> request approved AND the entitlement is granted.
+    rid = next(r["id"] for r in await m.list_access_requests(status="pending")
+               if r["connector_key"] == NANGO_KEY)
+    out = await m.approve_access_request(rid)
+    assert out["status"] == "approved"
+    assert NANGO_KEY in {i["key"] for i in await m.list_connectors()}
+
+
+async def test_request_access_rejected_when_already_available(env):
+    # Unrestricted tenant -> everything is already available -> nothing to request.
+    with pytest.raises(ValidationError, match="already available"):
+        await m.request_access(NANGO_KEY, m.AccessRequestBody())
+
+
+async def test_access_decisions_require_admin(env):
+    await m.set_entitlement("composio", m.EntitlementBody(allowed=True))
+    await m.request_access(NANGO_KEY, m.AccessRequestBody())
+    rid = next(r["id"] for r in await m.list_access_requests(status="pending")
+               if r["connector_key"] == NANGO_KEY)
+
+    member = TenantContext(tenant_id="t-test", user_id="m", roles=[Role.MEMBER])
+    tok = set_context(member)
+    try:
+        with pytest.raises(AuthorizationError):
+            await m.approve_access_request(rid)
+        with pytest.raises(AuthorizationError):
+            await m.reject_access_request(rid)
+    finally:
+        reset_context(tok)
+
+    # Owner can reject.
+    assert (await m.reject_access_request(rid))["status"] == "rejected"
 
 
 async def test_entitlement_management_requires_admin(env):

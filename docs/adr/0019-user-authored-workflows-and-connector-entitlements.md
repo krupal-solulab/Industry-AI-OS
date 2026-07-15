@@ -69,6 +69,22 @@ extras, default pack) — chat never breaks because the lookup failed.
   (`{allowed}`), and `POST /connectors/entitlements/grant-defaults` (grants every
   non-reference connector to the tenant — the one-time grandfather for existing tenants).
 
+### 4. Connector access requests ("Pending Permissions")
+
+For a *restricted* tenant, the FE Connector Hub splits into **Connected Systems** (enabled),
+**Available Connectors** (entitled, not yet connected), and **Pending Permissions** (not
+entitled). A member requests a not-entitled connector; an owner/admin approves or rejects.
+
+- New RLS-scoped table `connector_access_requests(tenant_id, connector_key, status
+  [pending|approved|rejected], requested_by, decided_by, …)` — migration `0005`; a partial
+  unique index caps it at one *pending* request per (tenant, connector).
+- `POST /connectors/{key}/request-access` (member; 422 if already available),
+  `GET /connectors/access-requests?status=`, `POST /connectors/access-requests/{id}/approve`
+  and `…/reject` (owner/admin only). **Approve grants the entitlement** (inserts the
+  `connector_entitlements` row) in the same transaction that marks the request approved.
+- Unrestricted tenants have everything entitled, so Pending Permissions is empty for them —
+  the flow only surfaces once a tenant is scoped down.
+
 ## Consequences
 
 - Adding a user flow is a data write, not a deploy — same posture as ADR-0016 (industry =

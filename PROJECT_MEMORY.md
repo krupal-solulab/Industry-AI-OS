@@ -987,4 +987,35 @@ Round of fixes after the user ran the builder live (screenshots). Five issues:
   connector (sandbox fixtures). So to get the real cred prompt, set `NANGO_SECRET_KEY` in
   `.env`.
 
+### Change Log — Connector Hub: 3-section UX + request→approve flow (ADR-0019)
+Reworked the Connectors page from a flat marketplace into an enterprise 3-section layout
+(**Connected Systems** / **Available Connectors** / **Pending Permissions**) with a real
+access-request → admin-approval flow, per user request.
+- **Backend (connectors service):** migration `0005_connector_access_requests.py` — RLS table
+  `connector_access_requests(tenant_id, connector_key, status[pending|approved|rejected],
+  requested_by, note, decided_by, created_at, decided_at)`; partial unique index caps one
+  *pending* per (tenant, connector). New endpoints in `main.py`:
+  `POST /connectors/{key}/request-access` (member; 422 if already available/entitled),
+  `GET /connectors/access-requests?status=`, `POST /connectors/access-requests/{id}/approve`
+  and `.../reject` (owner/admin only via `_require_admin`). **Approve marks the request
+  approved AND grants the entitlement** in one transaction. UUID path params validated
+  (`_valid_uuid`). ruff/AST clean; connectors tests **13 passed** (added 3: request flow,
+  already-available rejection, admin-only decisions).
+- **FE (Acc-Wired + Const-wired, identical):** `client.ts` gained `AccessRequest` +
+  `requestConnectorAccess`, `listAccessRequests`, `approveAccessRequest`, `rejectAccessRequest`,
+  `setConnectorEntitlement` (all registered in `api`); hooks `useAccessRequests`,
+  `useRequestAccess`, `useDecideAccessRequest`, `useSetEntitlement`. `app.connectors.tsx`
+  rewritten: data from `useConnectorCatalog()` (full catalog + `entitled`) + `useAccessRequests()`.
+  Sections: Connected = `entitled&&enabled` (Disconnect); Available = `entitled&&!enabled`
+  (Connect — the existing Nango `handleConnect` preserved verbatim); Pending = `!entitled`
+  (member → Request access / "Awaiting approval"; admin → Approve/Reject a pending request, or
+  Grant access directly). `isAdmin` = `useSession().isManager` (owner/admin), the same gate the
+  sidebar uses. Header + callout kept; the flat grid + search/category chips removed.
+- **Behaviour note:** the demo tenant is UNRESTRICTED (everything entitled) → Pending
+  Permissions is empty and nothing is requestable; the request→approve flow only surfaces once
+  a tenant is scoped down (admin grants it a subset via `PUT /entitlements/{key}`).
+- **Verified:** backend ruff/AST/tests green; both FEs confirmed (client fns + 4 hooks + 3
+  sections present via grep) but NOT compiled (needs `npm install`). Needs `up -d --build`
+  (migration 0005) + `npm install && npm run dev`. Docs: ADR-0019 + this file updated.
+
 <!-- New agents: append your entry above this line. -->
