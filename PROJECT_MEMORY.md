@@ -1018,4 +1018,35 @@ access-request → admin-approval flow, per user request.
   sections present via grep) but NOT compiled (needs `npm install`). Needs `up -d --build`
   (migration 0005) + `npm install && npm run dev`. Docs: ADR-0019 + this file updated.
 
+### Change Log — Interactive live workflow-run view (watch a flow execute)
+User wanted to *see* a workflow running (not just the assistant's "[Initiating…]" text). Added a
+live run view that polls a run and shows steps lighting up + the human approval gate + result.
+- **Backend (workflows):** new `pack_runtime.get_run_view(ctx, run_id)` — enriches a run with
+  per-step status by merging the definition's ordered steps against the run's persisted context:
+  `completed` (step in context.steps), `awaiting_approval` (== current_step while paused),
+  `running`, `skipped` (run terminal + step never ran → its `when` branch wasn't taken), or
+  `pending`. Also returns `name`, run `status`, `current_step`, and the AI `summary`. `GET
+  /packs/runs/{run_id}` now calls `get_run_view` (the internal `get_run` used by `resume_run` is
+  untouched — it still returns the raw context). ruff + AST clean.
+- **FE (Acc-Wired + Const-wired):** `client.ts` gained `WorkflowRunView` + `getRun`/`approveRun`/
+  `rejectRun`; hooks `useRun(runId)` (polls every 1500ms, stops on completed/rejected) +
+  `useDecideRun` (approve/reject). New `components/workflow/RunView.tsx` + route
+  `app.workflows.runs.$runId.tsx` (`/app/workflows/runs/:runId`): status-colored step graph
+  (green check / blue spinner / amber-pulse gate / greyed "skipped" / dim pending), an
+  Approve/Reject panel with the AI summary when `awaiting_approval`, and a completed/rejected
+  result banner. **Run** buttons wired: template cards (Acc-Wired passes demo invoice inputs
+  `{invoice_email:{id:"demo"}, has_accounting_connector:false, sheet_id:"demo-sheet"}` → drives
+  the demo/Sheets branch) and My-workflows cards now start a run and navigate to the run view.
+- **How the interaction plays out** (invoice flow): POST /run blocks ~a few sec through the 2 AI
+  steps → returns `awaiting_approval` with steps 1–5 done → run view shows the gate → user
+  Approve → resume runs branch+archive+notify → `completed`; the non-taken branch (QuickBooks)
+  shows `skipped`. Polling + mutation-invalidation advance the graph.
+- **Verified:** backend ruff/AST clean; both FEs have RunView + route + hooks + client fns
+  (grep-confirmed). FEs NOT compiled (node_modules incomplete) — `routeTree.gen.ts` regenerates
+  on `npm run dev` (Const-wired's committed tree is stale; auto-fixed on dev). TanStack v5
+  `refetchInterval(query)` callback + typed `navigate` params unverified without tsc.
+- **Not done (follow-up):** watch-from-assistant-chat — the assistant *starts* a run but the chat
+  doesn't surface the run_id, so the live view is reached via the Workflows tab Run button. Making
+  the chat emit the run_id + a "View run →" link needs a structured SSE frame (backend + FE).
+
 <!-- New agents: append your entry above this line. -->

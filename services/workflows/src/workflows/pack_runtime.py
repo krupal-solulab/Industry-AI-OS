@@ -409,6 +409,57 @@ async def get_run(ctx, run_id) -> dict | None:
     return dict(row) if row else None
 
 
+async def get_run_view(ctx, run_id) -> dict | None:
+    """Run detail enriched for the FE live-run view: each of the definition's ordered
+    steps annotated with its live status (completed / awaiting_approval / skipped /
+    pending), plus the human-readable summary. Read-only — does NOT expose the raw
+    context (unlike `get_run`, which `resume_run` uses internally)."""
+    row = await get_run(ctx, run_id)
+    if not row:
+        return None
+    raw_ctx = row["context"]
+    context = raw_ctx if isinstance(raw_ctx, dict) else json.loads(raw_ctx or "{}")
+    done = context.get("steps") or {}
+    status = row["status"]
+    current = row["current_step"]
+    terminal = status in ("completed", "rejected")
+    try:
+        definition = await load_definition(ctx, row["pack_key"], row["workflow_key"])
+    except KeyError:
+        definition = None
+    steps = []
+    for st in definition.steps if definition else []:
+        if st.id in done:
+            sstatus = "completed"
+        elif st.id == current and status == "awaiting_approval":
+            sstatus = "awaiting_approval"
+        elif st.id == current and status == "running":
+            sstatus = "running"
+        elif terminal:
+            # Run finished but this step never produced output → its `when` guard was
+            # false (the branch not taken).
+            sstatus = "skipped"
+        else:
+            sstatus = "pending"
+        steps.append(
+            {"id": st.id, "type": st.type.value, "name": st.name or st.id, "status": sstatus}
+        )
+    summary_out = (done.get("summary", {}) or {}).get("out", {}) or {}
+    src = "user" if row["pack_key"] == USER_PACK_KEY else "seed"
+    return {
+        "run_id": row["run_id"],
+        "pack_key": row["pack_key"],
+        "workflow_key": row["workflow_key"],
+        "name": _display_name(definition, src) if definition else row["workflow_key"],
+        "status": status,
+        "current_step": current,
+        "steps": steps,
+        "summary": summary_out.get("text") if isinstance(summary_out, dict) else None,
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
 # --------------------------------------------------------------------- execution
 def _approver_role(definition: WorkflowDefinition, step_id: str) -> str | None:
     for gate in definition.approvals:

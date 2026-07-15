@@ -325,7 +325,7 @@ async def delete_definition(workflow_key: str) -> dict:
 async def get_pack_run(run_id: str) -> dict:
     ctx = require_context()
     await check_ctx(ctx, "read", Resource(kind="workflow", id=run_id, tenant_id=ctx.tenant_id))
-    row = await pack_runtime.get_run(ctx, run_id)
+    row = await pack_runtime.get_run_view(ctx, run_id)
     if not row:
         raise NotFoundError("Run not found")
     row["created_at"] = row["created_at"].isoformat()
