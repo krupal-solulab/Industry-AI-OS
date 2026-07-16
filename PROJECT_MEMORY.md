@@ -1114,4 +1114,36 @@ single-session persistence.
   sidebar/loadSession wiring). FEs NOT compiled (node_modules incomplete). Needs `up -d --build`
   (orchestrator) + `npm install && npm run dev` per FE.
 
+### Change Log — Workflow preview redesign: cramped modal → slide-in side panel
+User (rightly) disliked the earlier `WorkflowDialog`/`WorkflowFlowDialog` — cramped horizontal
+nodes with 1-letter truncated labels + overlapping SVG curves. Replaced with a clean slide-in
+preview, per their reference. **FE-only** (uses the existing `GET /packs/definitions/{key}`).
+- **Both FEs:** new `src/components/workflow/WorkflowPreview.tsx` — a shadcn **`Sheet`**
+  (`side="right"`, built-in slide animation, `sm:max-w-md`) with **Flow | Details** tabs:
+  - **Flow** = a clean **vertical** step list (numbered type-colored badge + a thin vertical
+    connector line + a lucide type-icon tile + the FULL step name + type label) — no curves, no
+    cramming, vertical scroll if long.
+  - **Details** = per-step config (connector `tool`+`endpoint` / `ai.action` prompt snippet /
+    approver / branch condition), falls back to the list spec before the full def loads.
+  - **"Connections used"** footer = compact brand chips via the existing `IntegrationLogo`
+    (key→name map: nango.google-mail→Gmail, google-sheet→Google Sheets, google-drive→Google
+    Drive, quickbooks→QuickBooks).
+  - Data: `useQuery(["workflow-definition", pack, key], getWorkflowDefinition, {enabled: open})`.
+  - Type→icon: connector.call→Plug, document.parse→ScanLine, ai.action→Sparkles, approval→
+    UserCheck, branch→GitBranch, notify→Send, transform→Shuffle, manual→Play. Colors from
+    WorkflowFlow's TYPE_META.
+- **Workflows page:** each template is now a clean **card** (icon + name + one-line description +
+  a **Preview** button opening the Sheet) with the **Run** button kept separate. The old
+  `WorkflowDialog.tsx` (Acc) / `WorkflowFlowDialog.tsx` (Const) were **deleted** (no refs remain).
+  `WorkflowFlow` is still used by My-workflows cards; runs table + Run/run-view intact.
+  (Prop-name nit: Acc-Wired's `<WorkflowPreview def=…>`, Const-wired's `<WorkflowPreview spec=…>`
+  — each self-consistent.)
+- **Real brand logos (both apps):** the "Connections used" footer feeds `IntegrationLogo` a
+  `CONNECTOR_BRANDS` map with `name` + `domain`/`logo` (Gmail/Sheets/Drive → explicit gstatic
+  product PNGs; QuickBooks → Clearbit favicon via `domain`), so it renders actual brand marks
+  (monogram fallback on image error). `IntegrationLogo` = `<img src={logo ?? logoUrl(domain)}>`.
+- **Verified:** both `WorkflowPreview.tsx` present (Sheet+Tabs+IntegrationLogo), old modals gone,
+  no dangling imports. FEs NOT compiled (node_modules incomplete) — confirm `IntegrationLogo` prop
+  + Sheet width on `npm run dev`.
+
 <!-- New agents: append your entry above this line. -->
